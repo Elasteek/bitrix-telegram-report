@@ -123,17 +123,40 @@ def call_bitrix(webhook: str, method: str, params: dict) -> dict:
     raise RuntimeError(f"Битрикс24 недоступен ({method}): {last_error}")
 
 
-def count_leads(webhook: str, date_from: str, date_to: str, statuses: list, extra: dict = None) -> int:
+def fetch_leads(cfg: dict, date_from: str, date_to: str) -> list:
+    """Лиды за период: выбранные статусы × выбранные UTM_SOURCE (если заданы)."""
+    webhook = cfg["bitrix_webhook"]
     flt = {">=DATE_CREATE": date_from, "<DATE_CREATE": date_to}
-    if statuses:
-        flt["STATUS_ID"] = statuses
-    if extra:
-        flt.update(extra)
-    # start=0: нужен только счётчик total из ответа (трюк start=-1 на части порталов
-    # возвращает total=0, поэтому так делать нельзя)
-    data = call_bitrix(webhook, "crm.lead.list", {"filter": flt, "select": ["ID"], "start": 0})
-    total = data.get("total")
-    return int(total) if total is not None else len(data.get("result", []))
+    if cfg.get("statuses"):
+        flt["STATUS_ID"] = cfg["statuses"]
+    if cfg.get("utm_sources"):
+        flt["UTM_SOURCE"] = cfg["utm_sources"]
+    fields = ["ID", "STATUS_ID", "UTM_SOURCE", "UTM_MEDIUM", "UTM_CAMPAIGN"]
+    leads, start = [], 0
+    while True:
+        data = call_bitrix(webhook, "crm.lead.list",
+                           {"filter": flt, "select": fields, "start": start})
+        page = data.get("result", [])
+        leads.extend(page)
+        total = int(data.get("total") or 0)
+        if not page or len(leads) >= total or len(leads) >= 5000:
+            return leads
+        start += len(page)
+
+
+def count_by(leads: list, field: str) -> dict:
+    """Сколько лидов приходится на каждое значение поля, по убыванию."""
+    counts = {}
+    for lead in leads:
+        value = (lead.get(field) or "").strip() or "(без метки)"
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: -item[1]))
+
+
+def fmt(value: str, limit: int = 60) -> str:
+    if len(value) > limit:
+        value = value[:limit] + "…"
+    return html.escape(value)
 
 
 def status_names(webhook: str) -> dict:
@@ -148,33 +171,38 @@ def status_names(webhook: str) -> dict:
 
 
 def build_report(cfg: dict, day: datetime) -> str:
-    webhook = cfg["bitrix_webhook"]
     statuses = cfg.get("statuses") or []
     utm_sources = cfg.get("utm_sources") or []
     # API Битрикс24 понимает даты фильтра в часовом поясе портала
     date_from = day.strftime("%Y-%m-%d %H:%M:%S")
     date_to = (day + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    leads = fetch_leads(cfg, date_from, date_to)
 
-    lines = [f"📊 <b>Отчёт по лидам за {day:%d.%m.%Y}</b>", ""]
-
+    lines = [f"📊 <b>Отчёт по лидам за {day:%d.%m.%Y}</b>"]
     if utm_sources:
-        lines.append("<b>По источникам (UTM_SOURCE):</b>")
-        for utm in utm_sources:
-            count = count_leads(webhook, date_from, date_to, statuses, {"UTM_SOURCE": utm})
-            lines.append(f"• {html.escape(utm)}: <b>{count}</b>")
+        lines.append(f"источники: {fmt(', '.join(utm_sources))}")
+    lines.append("")
+
+    if not leads:
+        lines.append("Лидов по заданным статусам и источникам не было.")
+        return "\n".join(lines)
+
+    for title, field in (("По источникам (utm_source)", "UTM_SOURCE"),
+                         ("По каналам (utm_medium)", "UTM_MEDIUM"),
+                         ("По кампаниям (utm_campaign)", "UTM_CAMPAIGN")):
+        lines.append(f"<b>{title}:</b>")
+        for value, count in count_by(leads, field).items():
+            lines.append(f"• {fmt(value)}: <b>{count}</b>")
         lines.append("")
 
     if statuses and cfg.get("breakdown_by_status", True):
-        names = status_names(webhook)
+        names = status_names(cfg["bitrix_webhook"])
         lines.append("<b>По статусам:</b>")
-        for status_id in statuses:
-            count = count_leads(webhook, date_from, date_to, [status_id])
-            label = names.get(status_id, status_id)
-            lines.append(f"• {html.escape(label)}: <b>{count}</b>")
+        for status_id, count in count_by(leads, "STATUS_ID").items():
+            lines.append(f"• {fmt(names.get(status_id, status_id))}: <b>{count}</b>")
         lines.append("")
 
-    total = count_leads(webhook, date_from, date_to, statuses)
-    lines.append(f"Итого за день: <b>{total}</b>")
+    lines.append(f"Итого за день: <b>{len(leads)}</b>")
     return "\n".join(lines)
 
 

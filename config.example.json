@@ -4,8 +4,8 @@
   "telegram_chat_id": "-100XXXXXXXXXX",
   "period": "yesterday",
   "send_hour": 9,
-  "statuses": ["NEW", "IN_PROCESS", "PROCESSED"],
-  "utm_sources": ["yandex", "vk", "google"],
+  "statuses": ["NEW", "IN_PROCESS", "UC_9HOV0Y", "PROCESSED", "UC_Q91TDC"],
+  "utm_sources": ["fb", "ig", "instagramm"],
   "breakdown_by_status": true,
   "max_catchup_days": 7
 }

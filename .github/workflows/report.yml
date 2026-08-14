@@ -12,6 +12,10 @@ on:
       send_hour:
         description: "Час отправки для ручного запуска (укажите 0 — отправить сразу)"
         default: ""
+      force:
+        description: "Отправить, даже если за этот день отчёт уже уходил"
+        type: boolean
+        default: false
 
 # Не запускать несколько копий одновременно
 concurrency:
@@ -44,7 +48,7 @@ jobs:
           BTR_SEND_HOUR: ${{ inputs.send_hour || '9' }}   # во сколько слать отчёт (по TZ выше)
           BTR_STATUSES: ${{ vars.STATUSES }}     # напр.: NEW,IN_PROCESS
           BTR_UTM_SOURCES: ${{ vars.UTM_SOURCES }}  # напр.: yandex,vk
-        run: python3 bitrix_report.py
+        run: python3 bitrix_report.py ${{ inputs.force && '--force' || '' }}
 
       - name: Сохранить state.json
         if: always()
