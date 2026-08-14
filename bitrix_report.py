@@ -88,6 +88,8 @@ def config_from_env() -> dict:
         "telegram_token": os.environ.get("BTR_TELEGRAM_TOKEN", "").strip(),
         # список chat_id через запятую — отчёты уходят во все, команды работают в каждом
         "telegram_chat_id": [c.strip() for c in os.environ.get("BTR_TELEGRAM_CHAT_ID", "").split(",") if c.strip()],
+        # чаты только для АВТООТЧЁТОВ; пусто = все telegram_chat_id
+        "report_chat_id": split("BTR_REPORT_CHAT_ID"),
         "send_hour": send_hour,
         "poll_seconds": poll_seconds,
         "reports": split("BTR_REPORTS") or ["day", "week", "month"],
@@ -233,9 +235,19 @@ def chat_ids(cfg: dict) -> list:
     return [str(c).strip() for c in raw if str(c).strip()]
 
 
-def send_to_all(cfg: dict, text: str, reply_markup: dict = None) -> None:
-    """Отправить сообщение во все подключённые чаты; сбой одного не мешает другим."""
-    chats = chat_ids(cfg)
+def report_chat_ids(cfg: dict) -> list:
+    """Чаты для автоматических отчётов; если не заданы — все подключённые."""
+    raw = cfg.get("report_chat_id") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    ids = [str(c).strip() for c in raw if str(c).strip()]
+    return ids or chat_ids(cfg)
+
+
+def send_to_all(cfg: dict, text: str, reply_markup: dict = None, chats: list = None) -> None:
+    """Отправить сообщение в чаты (по умолчанию во все подключённые);
+    сбой одного чата не мешает другим."""
+    chats = chats or chat_ids(cfg)
     errors = []
     for chat in chats:
         try:
@@ -345,10 +357,11 @@ def run_scheduled(cfg: dict, force: bool = False, only: str = None) -> None:
         date_from = rep["start"].strftime("%Y-%m-%d %H:%M:%S")
         date_to = rep["end"].strftime("%Y-%m-%d %H:%M:%S")
         text = build_report(cfg, date_from, date_to, rep["title"])
-        send_to_all(cfg, text)
+        rchats = report_chat_ids(cfg)
+        send_to_all(cfg, text, chats=rchats)
         state.setdefault("sent", {})[rep["kind"]] = rep["key"]
         save_state(spath, state)
-        log(f"отчёт {rep['title']} отправлен ({len(chat_ids(cfg))} чат.)")
+        log(f"отчёт {rep['title']} отправлен ({len(rchats)} чат. авто)")
 
 
 def notify_error(cfg: dict, error: Exception) -> None:
@@ -361,7 +374,8 @@ def notify_error(cfg: dict, error: Exception) -> None:
         send_to_all(cfg,
                     "⚠️ <b>Отчёт по лидам не отправлен</b>\n"
                     f"<code>{html.escape(str(error)[:800])}</code>\n"
-                    "Следующая попытка — в ближайший запуск по расписанию.")
+                    "Следующая попытка — в ближайший запуск по расписанию.",
+                    chats=report_chat_ids(cfg))
         state["last_error_ts"] = time.time()
         save_state(spath, state)
     except Exception:
@@ -410,8 +424,8 @@ HELP_TEXT = (
     "• Команда из меню «/» улетает сразу, без аргументов — для дат печатайте "
     "текстом (примеры выше) или жмите /report.\n"
     "• Ответ обычно в течение 1–3 минут.\n"
-    "• Утренние отчёты приходят сами: за день — в 9:00, за неделю — в понедельник, "
-    "за месяц — 1-го числа.\n"
+    "• Утренние автоотчёты (в группах, где они включены): за день — в 9:00, "
+    "за неделю — в понедельник, за месяц — 1-го числа.\n"
     "• Считаются лиды в статусах: Новый, Прогрев, Попытка оплатить курс, "
     "Диалог с куратором, Диагностика.\n"
     "• Если что-то сломалось — бот сам пришлёт ⚠️ с причиной."
