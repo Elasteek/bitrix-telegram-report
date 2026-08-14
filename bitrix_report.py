@@ -204,6 +204,15 @@ def count_products(leads: list) -> dict:
     return dict(sorted(counts.items(), key=lambda item: -item[1]))
 
 
+def plural_times(n: int) -> str:
+    """1 раз / 2 раза / 5 раз."""
+    if n % 10 == 1 and n % 100 != 11:
+        return f"{n} раз"
+    if n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+        return f"{n} раза"
+    return f"{n} раз"
+
+
 def build_summary(leads: list, clean: bool = False) -> list:
     """Финальная выжимка: по каждому источнику — сколько лидов и что брали."""
     groups = {}
@@ -215,12 +224,11 @@ def build_summary(leads: list, clean: bool = False) -> list:
     lines = []
     for source, group in ordered[:5]:
         lines.append(f"• <b>{len(group)}</b> — {fmt(source)}")
-        products = count_products(group)
-        names = [name + (f" ({count})" if count > 1 else "")
-                 for name, count in list(products.items())[:3]]
-        if names:
-            tail = f" +{len(products) - 3} ещё" if len(products) > 3 else ""
-            lines.append(f"↳ брали: {fmt(', '.join(names) + tail)}")
+        products = list(count_products(group).items())
+        for name, count in products[:5]:
+            lines.append(f"  ↳ {fmt(name, 48)} — {plural_times(count)}")
+        if len(products) > 5:
+            lines.append(f"  ↳ …и ещё {len(products) - 5} курса")
     if len(ordered) > 5:
         lines.append(f"• …и ещё {len(ordered) - 5} источников")
     return lines
