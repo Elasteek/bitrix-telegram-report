@@ -483,20 +483,29 @@ def clean_attribution_sections(cfg: dict, leads: list, date_to: str) -> list:
     return lines
 
 
-def weekly_lead_counts(cfg: dict, date_to: str, weeks: int = 8) -> dict:
+def weekly_lead_counts(cfg: dict, date_to: str, weeks: int = 8,
+                       attributed: bool = False) -> dict:
     """Счёт СОЗДАННЫХ лидов по календарным неделям (Пн–Вс) за N недель.
-    Без фильтра статусов: старые лиды меняют статус со временем, и динамика
-    по статусам превращается в «4 → 70» вместо честного тренда."""
+    attributed=True — считать только лиды с меткой (своей или найденной по
+    телефону в истории за 90 дней) — для рекламного чата."""
     end = datetime.strptime(date_to, DATE_FORMAT)
     start = (end - timedelta(days=7 * weeks)).strftime(DATE_FORMAT)
     webhook = cfg["bitrix_webhook"]
     flt = {">=DATE_CREATE": start, "<DATE_CREATE": date_to}
+    select = ["ID", "DATE_CREATE"]
+    mapping = attribution_map(cfg, date_to) if attributed else None
+    if mapping is not None:
+        select += ["PHONE", "UTM_SOURCE"]
     counts, cursor, fetched = {}, 0, 0
     while True:
         data = call_bitrix(webhook, "crm.lead.list",
-                           {"filter": flt, "select": ["ID", "DATE_CREATE"], "start": cursor})
+                           {"filter": flt, "select": select, "start": cursor})
         page = data.get("result", [])
         for lead in page:
+            if mapping is not None:
+                own = (lead.get("UTM_SOURCE") or "").strip()
+                if not own and user_key(lead) not in mapping:
+                    continue  # без метки и телефон в истории не найден
             try:
                 created = datetime.fromisoformat(lead.get("DATE_CREATE") or "")
             except ValueError:
@@ -551,9 +560,10 @@ def current_week_projection(cfg: dict):
 
 
 def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
-                           week_end: datetime) -> str:
-    """Недельное сообщение в человеческом порядке: Цель → Реальность (вчера +
-    неделя + динамика + самопроверка) → Прогноз. Следующий прогноз запоминается."""
+                           week_end: datetime, clean: bool = False) -> str:
+    """Недельное сообщение: Цель → Реальность → Прогноз. В чистом (рекламном)
+    чате динамика — только по лидам с метками (безымянных ищем по телефону),
+    в обычном — по всем созданным лидам."""
     counts = weekly_lead_counts(cfg, week_end.strftime(DATE_FORMAT))
     ordered = sorted(counts.items())
     key = week_start.strftime("%Y-%m-%d")
@@ -612,6 +622,13 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
                            f"— идёт {current / elapsed:.0f}/день")
 
     trend = " → ".join(str(c) for c in history[-6:])
+    if clean:
+        attr_counts = weekly_lead_counts(cfg, week_end.strftime(DATE_FORMAT),
+                                         attributed=True)
+        trend = " → ".join(str(c) for _, c in sorted(attr_counts.items())[-6:])
+        dyn_label = "Динамика по неделям (только с метками, безымянных ищем по телефону)"
+    else:
+        dyn_label = "Динамика по неделям (все созданные лиды)"
     try:
         wtd, projected, days_left_w = current_week_projection(cfg)
         current_week = (f"🔮 Текущая неделя: уже {wtd}, к воскресенью будет "
@@ -628,7 +645,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             f"{y_line}\n"
             f"• Неделя {week_start:%d.%m}–{week_end - timedelta(days=1):%d.%m.%Y}: "
             f"<b>{actual}</b> лидов (~{actual / 7:.0f}/день)\n"
-            f"• Динамика по неделям (все созданные лиды): {fmt(trend)}\n"
+            f"• {dyn_label}: {fmt(trend)}\n"
             f"• Мой прогноз на неделю: {check}\n"
             + ("\n".join(month_lines) + "\n" if month_lines else "") +
             f"\n{verdict}\n"
@@ -1015,9 +1032,17 @@ def run_scheduled(cfg: dict, force: bool = False, only: str = None) -> None:
 
         if rep["kind"] == "week":
             # вторым сообщением к недельному отчёту — прогноз по лидам
+            # (в рекламном чате динамика только по лидам с метками)
             try:
-                forecast = build_forecast_message(cfg, state, rep["start"], rep["end"])
-                send_to_all(cfg, forecast, chats=rchats)
+                plain = [c for c in rchats if not clean_mode(cfg, c)]
+                neat = [c for c in rchats if clean_mode(cfg, c)]
+                if plain:
+                    send_to_all(cfg, build_forecast_message(cfg, state, rep["start"], rep["end"]),
+                                chats=plain)
+                if neat:
+                    send_to_all(cfg, build_forecast_message(cfg, state, rep["start"], rep["end"],
+                                                            clean=True),
+                                chats=neat)
                 save_state(spath, state)
                 log("прогноз по лидам отправлен")
             except Exception as err:
@@ -1417,13 +1442,13 @@ def build_daily_forecast_message(cfg: dict, state: dict) -> str:
             f"{plan_line}")
 
 
-def forecast_and_plan_message(cfg: dict, state: dict) -> str:
+def forecast_and_plan_message(cfg: dict, state: dict, clean: bool = False) -> str:
     """Прогноз + реальный план по последней завершённой неделе."""
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     monday = today - timedelta(days=today.weekday())
     week_start = monday - timedelta(days=7)
     week_end = week_start + timedelta(days=7)
-    return (build_forecast_message(cfg, state, week_start, week_end)
+    return (build_forecast_message(cfg, state, week_start, week_end, clean=clean)
             + "\n\n" + build_plan(cfg, week_start, week_end, plan=state.get("plan")))
 
 
@@ -1453,14 +1478,14 @@ def handle_callback(cfg: dict, state: dict, spath: Path, cb: dict) -> None:
     stage = menu.get("stage", "value")
     if stage == "period":
         if option.get("v") == "forecast":
-            send_telegram(token, chat, forecast_and_plan_message(cfg, state))
+            send_telegram(token, chat, forecast_and_plan_message(cfg, state, clean=clean))
             log("кнопка: прогноз и план (из главного меню)")
             return
         send_menu(cfg, state, spath, field_menu(option["from"], option["to"], option["title"]), chat)
     elif stage == "field":
         value = option["v"]
         if value == "forecast":
-            send_telegram(token, chat, forecast_and_plan_message(cfg, state))
+            send_telegram(token, chat, forecast_and_plan_message(cfg, state, clean=clean))
             log("кнопка: прогноз и план")
             return
         utm_fields = None if value == "all" else ([] if value == "short" else [value])
