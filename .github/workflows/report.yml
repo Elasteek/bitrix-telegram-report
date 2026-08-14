@@ -1,0 +1,51 @@
+name: Отчёт по лидам в Telegram
+
+# Запускается каждые 15 минут; сам скрипт по state.json понимает,
+# отправлял ли он уже отчёт за этот день, поэтому дублей не будет.
+# GitHub Actions бесплатен для приватных репозиториев в пределах
+# 2000 минут в месяц — этот воркфлоу тратит ~40 минут в месяц.
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}   # ручной запуск со вкладки Actions
+
+# Не запускать несколько копий одновременно
+concurrency:
+  group: report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      # state.json храним в кэше GitHub — так отчёт не задублируется
+      # между запусками, а после сбоя отправится в следующий раз
+      - name: Восстановить state.json
+        uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: btr-state-${{ github.run_id }}
+          restore-keys: |
+            btr-state-
+
+      - name: Собрать и отправить отчёт
+        env:
+          TZ: Europe/Moscow                      # часовой пояс, по которому считается "день"
+          BTR_BITRIX_WEBHOOK: ${{ secrets.BITRIX_WEBHOOK }}
+          BTR_TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          BTR_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BTR_SEND_HOUR: "9"                     # во сколько слать отчёт (по TZ выше)
+          BTR_STATUSES: ${{ vars.STATUSES }}     # напр.: NEW,IN_PROCESS
+          BTR_UTM_SOURCES: ${{ vars.UTM_SOURCES }}  # напр.: yandex,vk
+        run: python3 bitrix_report.py
+
+      - name: Сохранить state.json
+        if: always()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: state.json
+          key: btr-state-${{ github.run_id }}

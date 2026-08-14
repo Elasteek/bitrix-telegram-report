@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>bitrix-telegram-report</string>
+
+    <!-- Что и чем запускать -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/elasteek/ZCodeProject/bitrix-telegram-report/bitrix_report.py</string>
+    </array>
+
+    <!-- Каждые 15 минут; сам скрипт решает, пора ли отправлять отчёт -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <!-- Запустить сразу при загрузке агента (или пробуждении Mac) -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Куда писать вывод скрипта -->
+    <key>StandardOutPath</key>
+    <string>/Users/elasteek/ZCodeProject/bitrix-telegram-report/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/elasteek/ZCodeProject/bitrix-telegram-report/launchd.err.log</string>
+</dict>
+</plist>

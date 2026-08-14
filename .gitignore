@@ -1,0 +1,8 @@
+# Секреты и рабочие файлы — никогда не попадают в git/GitHub
+config.json
+state.json
+report.log
+launchd.out.log
+launchd.err.log
+__pycache__/
+.DS_Store
