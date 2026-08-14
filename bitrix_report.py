@@ -93,6 +93,8 @@ def config_from_env() -> dict:
         "report_chat_id": split("BTR_REPORT_CHAT_ID"),
         # чаты в «чистом» режиме — без строк «(без метки)» в отчётах
         "clean_chats": split("BTR_CLEAN_CHATS"),
+        # чаты, чьи отчёты приходят без UTM-списков
+        "no_utm_chats": split("BTR_NO_UTM_CHATS"),
         "send_hour": send_hour,
         "poll_seconds": poll_seconds,
         "reports": split("BTR_REPORTS") or ["day", "week", "month"],
@@ -486,8 +488,9 @@ def fmt(value: str, limit: int = 60) -> str:
 
 
 def build_report(cfg: dict, date_from: str, date_to: str, title: str,
-                 extra: dict = None, clean: bool = False) -> str:
-    """Отчёт за период. clean=True — «чистый» режим: без строк «(без метки)»."""
+                 extra: dict = None, clean: bool = False, utm_fields=None) -> str:
+    """Отчёт за период. clean=True — «чистый» режим без «(без метки)»;
+    utm_fields: None — все 5 UTM-разделов, [] — без них, список — только эти."""
     utm_sources = cfg.get("utm_sources") or []
     leads = fetch_leads(cfg, date_from, date_to, extra)
 
@@ -503,11 +506,14 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
         lines.append("Лидов по заданным статусам и источникам не было.")
         return "\n".join(lines)
 
-    for section_title, field in (("По источникам (utm_source)", "UTM_SOURCE"),
-                                 ("По каналам (utm_medium)", "UTM_MEDIUM"),
-                                 ("По кампаниям (utm_campaign)", "UTM_CAMPAIGN"),
-                                 ("По объявлениям (utm_content)", "UTM_CONTENT"),
-                                 ("По ключам (utm_term)", "UTM_TERM")):
+    all_sections = (("По источникам (utm_source)", "UTM_SOURCE"),
+                    ("По каналам (utm_medium)", "UTM_MEDIUM"),
+                    ("По кампаниям (utm_campaign)", "UTM_CAMPAIGN"),
+                    ("По объявлениям (utm_content)", "UTM_CONTENT"),
+                    ("По ключам (utm_term)", "UTM_TERM"))
+    sections = all_sections if utm_fields is None else \
+        [s for s in all_sections if s[1] in utm_fields]
+    for section_title, field in sections:
         rows = [(value, count) for value, count in count_by(leads, field).items()
                 if not (clean and value == "(без метки)")]
         if not rows:
@@ -574,6 +580,14 @@ def report_chat_ids(cfg: dict) -> list:
 def clean_mode(cfg: dict, chat_id) -> bool:
     """«Чистый» режим для чата: в отчётах нет строк «(без метки)»."""
     raw = cfg.get("clean_chats") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return str(chat_id) in {str(c).strip() for c in raw}
+
+
+def no_utm_mode(cfg: dict, chat_id) -> bool:
+    """Чат, чьи отчёты приходят без UTM-списков (только итоги и уроки)."""
+    raw = cfg.get("no_utm_chats") or []
     if isinstance(raw, str):
         raw = [raw]
     return str(chat_id) in {str(c).strip() for c in raw}
@@ -692,18 +706,19 @@ def run_scheduled(cfg: dict, force: bool = False, only: str = None) -> None:
         date_from = rep["start"].strftime("%Y-%m-%d %H:%M:%S")
         date_to = rep["end"].strftime("%Y-%m-%d %H:%M:%S")
         rchats = report_chat_ids(cfg)
-        # для «чистых» чатов отчёт собирается без строк «(без метки)»
-        plain = [c for c in rchats if not clean_mode(cfg, c)]
-        neat = [c for c in rchats if clean_mode(cfg, c)]
-        if plain:
-            send_to_all(cfg, build_report(cfg, date_from, date_to, rep["title"]),
-                        chats=plain)
-        if neat:
-            send_to_all(cfg, build_report(cfg, date_from, date_to, rep["title"], clean=True),
-                        chats=neat)
+        # вариант отчёта зависит от режима чата: чистый/обычный × с UTM-списками/без
+        variants = {}
+        for chat in rchats:
+            variants.setdefault((clean_mode(cfg, chat), no_utm_mode(cfg, chat)), []).append(chat)
+        for (clean, no_utm), chats in variants.items():
+            send_to_all(cfg, build_report(cfg, date_from, date_to, rep["title"],
+                                          clean=clean,
+                                          utm_fields=[] if no_utm else None),
+                        chats=chats)
         state.setdefault("sent", {})[rep["kind"]] = rep["key"]
         save_state(spath, state)
-        log(f"отчёт {rep['title']} отправлен ({len(rchats)} чат., из них чистых: {len(neat)})")
+        log(f"отчёт {rep['title']} отправлен в {len(rchats)} чат. "
+            f"({len(variants)} варианта)")
 
 
 def notify_error(cfg: dict, error: Exception) -> None:
@@ -730,8 +745,9 @@ HELP_TEXT = (
     "🤖 <b>Отчёты по лидам Битрикс24 — инструкция</b>\n"
     "\n"
     "🔘 <b>КОНСТРУКТОР ПО КНОПКАМ (ничего печатать не надо)</b>\n"
-    "/report → период (вчера, сегодня, эта/прошлая неделя, этот/прошлый месяц) → "
-    "весь отчёт или рекламное поле → значение\n"
+    "/report → период (вчера, сегодня, эта/прошлая неделя, этот/прошлый месяц, "
+    "90 дней) → формат: краткий без UTM-списков, полный или один конкретный "
+    "(источник / канал / кампания / объявление / ключ)\n"
     "Просто отправьте команду и нажимайте кнопки.\n"
     "\n"
     "📅 <b>ОТЧЁТЫ ЗА ПЕРИОД</b>\n"
@@ -832,9 +848,11 @@ def period_menu() -> dict:
 
 
 def field_menu(date_from: str, date_to: str, title: str) -> dict:
-    """Второй шаг /report: весь отчёт или разбивка по одному UTM-полю."""
-    items = [("📊 Весь отчёт", "all")] + \
-            [(f"🔎 {label}", key) for key, label in FIELD_LABELS.items()]
+    """Второй шаг /report: формат отчёта — краткий, полный или один UTM-список."""
+    items = [("📊 Краткий (без UTM-списков)", "short"),
+             ("📋 Полный (все UTM-списки)", "all")] + \
+            [(f"🔎 Только {label.split(' (')[0]}", key)
+             for key, label in FIELD_LABELS.items()]
     options = {str(i): {"btn": btn, "v": value} for i, (btn, value) in enumerate(items)}
     return {"stage": "field", "text": f"Что показать {title}?",
             "from": date_from, "to": date_to, "title": title, "options": options}
@@ -883,16 +901,17 @@ def month_bounds(month_start: datetime):
     return month_start, end
 
 
-def process_command(cfg: dict, text: str, clean: bool = False):
+def process_command(cfg: dict, text: str, clean: bool = False, no_utm: bool = False):
     """Ответ на команду из чата. None — молча проигнорировать (не команда).
 
-    Возврат: строка (текст ответа) или dict-меню; clean — «чистый» режим чата.
+    Возврат: строка или dict-меню; clean/no_utm — режимы чата.
     """
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     parts = text.split()
     cmd = parts[0].lower().split("@")[0]
     args = parts[1:]
     periods = completed_periods(datetime.now())
+    fields = [] if no_utm else None
 
     # суффикс «utm <поле>» — меню с кнопками по значениям поля
     utm_field = None
@@ -909,7 +928,7 @@ def process_command(cfg: dict, text: str, clean: bool = False):
     def answer(date_from, date_to, title):
         if utm_field:
             return build_menu(cfg, utm_field, date_from, date_to, title, clean)
-        return build_report(cfg, date_from, date_to, title, clean=clean)
+        return build_report(cfg, date_from, date_to, title, clean=clean, utm_fields=fields)
 
     if cmd in ("/start", "/help"):
         return HELP_TEXT
@@ -1026,16 +1045,12 @@ def handle_callback(cfg: dict, state: dict, spath: Path, cb: dict) -> None:
     if stage == "period":
         send_menu(cfg, state, spath, field_menu(option["from"], option["to"], option["title"]), chat)
     elif stage == "field":
-        if option["v"] == "all":
-            report = build_report(cfg, menu["from"], menu["to"], menu["title"], clean=clean)
-            send_telegram(token, chat, report)
-            log(f"кнопка: весь отчёт {menu['title']}")
-        else:
-            result = build_menu(cfg, option["v"], menu["from"], menu["to"], menu["title"], clean)
-            if isinstance(result, str):
-                send_telegram(token, chat, result)
-            else:
-                send_menu(cfg, state, spath, result, chat)
+        value = option["v"]
+        utm_fields = None if value == "all" else ([] if value == "short" else [value])
+        report = build_report(cfg, menu["from"], menu["to"], menu["title"],
+                              clean=clean, utm_fields=utm_fields)
+        send_telegram(token, chat, report)
+        log(f"кнопка: отчёт {menu['title']} ({option['btn']})")
     else:
         report = build_report(cfg, menu["from"], menu["to"], menu["title"],
                               extra={menu["field"]: option["v"]}, clean=clean)
@@ -1112,7 +1127,8 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
                         pass
                 continue
             try:
-                reply = process_command(cfg, text, clean=clean_mode(cfg, chat))
+                reply = process_command(cfg, text, clean=clean_mode(cfg, chat),
+                                        no_utm=no_utm_mode(cfg, chat))
             except Exception as err:
                 reply = f"⚠️ Не удалось собрать отчёт: {html.escape(str(err)[:400])}"
             if reply is None:
