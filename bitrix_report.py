@@ -91,6 +91,8 @@ def config_from_env() -> dict:
         "telegram_chat_id": [c.strip() for c in os.environ.get("BTR_TELEGRAM_CHAT_ID", "").split(",") if c.strip()],
         # чаты только для АВТООТЧЁТОВ; пусто = все telegram_chat_id
         "report_chat_id": split("BTR_REPORT_CHAT_ID"),
+        # чаты в «чистом» режиме — без строк «(без метки)» в отчётах
+        "clean_chats": split("BTR_CLEAN_CHATS"),
         "send_hour": send_hour,
         "poll_seconds": poll_seconds,
         "reports": split("BTR_REPORTS") or ["day", "week", "month"],
@@ -202,21 +204,23 @@ def count_products(leads: list) -> dict:
     return dict(sorted(counts.items(), key=lambda item: -item[1]))
 
 
-def build_summary(leads: list) -> list:
+def build_summary(leads: list, clean: bool = False) -> list:
     """Финальная выжимка: по каждому источнику — сколько лидов и что брали."""
     groups = {}
     for lead in leads:
         source = (lead.get("UTM_SOURCE") or "").strip() or "(без метки)"
         groups.setdefault(source, []).append(lead)
-    ordered = sorted(groups.items(), key=lambda item: -len(item[1]))
+    ordered = [(s, g) for s, g in sorted(groups.items(), key=lambda item: -len(item[1]))
+               if not (clean and s == "(без метки)")]
     lines = []
     for source, group in ordered[:5]:
+        lines.append(f"• <b>{len(group)}</b> — {fmt(source)}")
         products = count_products(group)
         names = [name + (f" ({count})" if count > 1 else "")
                  for name, count in list(products.items())[:3]]
-        tail = f" +{len(products) - 3} ещё" if len(products) > 3 else ""
-        took = ("; брали: " + ", ".join(names) + tail) if names else ""
-        lines.append(f"• <b>{len(group)}</b> — {fmt(source)}{took}")
+        if names:
+            tail = f" +{len(products) - 3} ещё" if len(products) > 3 else ""
+            lines.append(f"↳ брали: {fmt(', '.join(names) + tail)}")
     if len(ordered) > 5:
         lines.append(f"• …и ещё {len(ordered) - 5} источников")
     return lines
@@ -228,7 +232,9 @@ def fmt(value: str, limit: int = 60) -> str:
     return html.escape(value)
 
 
-def build_report(cfg: dict, date_from: str, date_to: str, title: str, extra: dict = None) -> str:
+def build_report(cfg: dict, date_from: str, date_to: str, title: str,
+                 extra: dict = None, clean: bool = False) -> str:
+    """Отчёт за период. clean=True — «чистый» режим: без строк «(без метки)»."""
     utm_sources = cfg.get("utm_sources") or []
     leads = fetch_leads(cfg, date_from, date_to, extra)
 
@@ -249,19 +255,13 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str, extra: dic
                                  ("По кампаниям (utm_campaign)", "UTM_CAMPAIGN"),
                                  ("По объявлениям (utm_content)", "UTM_CONTENT"),
                                  ("По ключам (utm_term)", "UTM_TERM")):
-        counts = count_by(leads, field)
-        if set(counts) == {"(без метки)"}:
-            continue  # поле пустое у всех лидов — раздел не показываем
+        rows = [(value, count) for value, count in count_by(leads, field).items()
+                if not (clean and value == "(без метки)")]
+        if not rows:
+            continue  # ничего значимого (или всё без меток в чистом режиме)
         lines.append(f"<b>{section_title}:</b>")
-        for value, count in counts.items():
+        for value, count in rows:
             lines.append(f"• {fmt(value)}: <b>{count}</b>")
-        lines.append("")
-
-    products = count_products(leads)
-    if products:
-        lines.append("<b>📚 Уроки/курсы (что брали):</b>")
-        for name, count in list(products.items())[:20]:
-            lines.append(f"• {fmt(name)}: <b>{count}</b>")
         lines.append("")
 
     if cfg.get("statuses") and cfg.get("breakdown_by_status", True):
@@ -272,7 +272,7 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str, extra: dic
         lines.append("")
 
     lines.append(f"📋 <b>Итог: {len(leads)}</b>")
-    lines.extend(build_summary(leads))
+    lines.extend(build_summary(leads, clean))
     return "\n".join(lines)
 
 
@@ -291,6 +291,14 @@ def report_chat_ids(cfg: dict) -> list:
         raw = [raw]
     ids = [str(c).strip() for c in raw if str(c).strip()]
     return ids or chat_ids(cfg)
+
+
+def clean_mode(cfg: dict, chat_id) -> bool:
+    """«Чистый» режим для чата: в отчётах нет строк «(без метки)»."""
+    raw = cfg.get("clean_chats") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return str(chat_id) in {str(c).strip() for c in raw}
 
 
 def send_to_all(cfg: dict, text: str, reply_markup: dict = None, chats: list = None) -> None:
@@ -405,12 +413,19 @@ def run_scheduled(cfg: dict, force: bool = False, only: str = None) -> None:
     for rep in reports:
         date_from = rep["start"].strftime("%Y-%m-%d %H:%M:%S")
         date_to = rep["end"].strftime("%Y-%m-%d %H:%M:%S")
-        text = build_report(cfg, date_from, date_to, rep["title"])
         rchats = report_chat_ids(cfg)
-        send_to_all(cfg, text, chats=rchats)
+        # для «чистых» чатов отчёт собирается без строк «(без метки)»
+        plain = [c for c in rchats if not clean_mode(cfg, c)]
+        neat = [c for c in rchats if clean_mode(cfg, c)]
+        if plain:
+            send_to_all(cfg, build_report(cfg, date_from, date_to, rep["title"]),
+                        chats=plain)
+        if neat:
+            send_to_all(cfg, build_report(cfg, date_from, date_to, rep["title"], clean=True),
+                        chats=neat)
         state.setdefault("sent", {})[rep["kind"]] = rep["key"]
         save_state(spath, state)
-        log(f"отчёт {rep['title']} отправлен ({len(rchats)} чат. авто)")
+        log(f"отчёт {rep['title']} отправлен ({len(rchats)} чат., из них чистых: {len(neat)})")
 
 
 def notify_error(cfg: dict, error: Exception) -> None:
@@ -492,15 +507,17 @@ FIELD_LABELS = {"UTM_SOURCE": "источник (utm_source)", "UTM_MEDIUM": "к
                 "UTM_TERM": "ключ (utm_term)"}
 
 
-def build_menu(cfg: dict, field: str, date_from: str, date_to: str, title: str):
+def build_menu(cfg: dict, field: str, date_from: str, date_to: str, title: str,
+               clean: bool = False):
     """Меню со значениями UTM-поля за период (третий шаг /report и «utm»-команд)."""
     leads = fetch_leads(cfg, date_from, date_to)
-    counts = count_by(leads, field)
+    counts = [(value, count) for value, count in count_by(leads, field).items()
+              if not (clean and value == "(без метки)")]
     if not counts:
         return f"Лидов за период {title} не было — выбирать не из чего."
     options = {str(i): {"btn": f"{value if len(value) <= 44 else value[:44] + '…'} · {count}",
                         "v": value}
-               for i, (value, count) in enumerate(list(counts.items())[:20])}
+               for i, (value, count) in enumerate(counts[:20])}
     return {"stage": "value", "text": f"🔎 {title} — выберите {FIELD_LABELS.get(field, field)}:",
             "field": field, "from": date_from, "to": date_to, "title": title,
             "options": options}
@@ -547,6 +564,7 @@ def send_menu(cfg: dict, state: dict, spath: Path, menu: dict, chat_id: str) -> 
     mid = str(state.get("menu_seq", 0) + 1)
     state["menu_seq"] = int(mid)
     menu["chat"] = chat_id
+    menu["clean"] = clean_mode(cfg, chat_id)
     menus[mid] = menu
     while len(menus) > 12:  # держим только свежие меню
         menus.pop(next(iter(menus)))
@@ -583,10 +601,10 @@ def month_bounds(month_start: datetime):
     return month_start, end
 
 
-def process_command(cfg: dict, text: str):
+def process_command(cfg: dict, text: str, clean: bool = False):
     """Ответ на команду из чата. None — молча проигнорировать (не команда).
 
-    Возврат: строка (текст ответа) или dict вида build_menu (меню с кнопками).
+    Возврат: строка (текст ответа) или dict-меню; clean — «чистый» режим чата.
     """
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     parts = text.split()
@@ -608,8 +626,8 @@ def process_command(cfg: dict, text: str):
 
     def answer(date_from, date_to, title):
         if utm_field:
-            return build_menu(cfg, utm_field, date_from, date_to, title)
-        return build_report(cfg, date_from, date_to, title)
+            return build_menu(cfg, utm_field, date_from, date_to, title, clean)
+        return build_report(cfg, date_from, date_to, title, clean=clean)
 
     if cmd in ("/start", "/help"):
         return HELP_TEXT
@@ -635,7 +653,7 @@ def process_command(cfg: dict, text: str):
         else:
             period = periods["day"]
         return build_menu(cfg, slash_field, period["start"].strftime(DATE_FORMAT),
-                          period["end"].strftime(DATE_FORMAT), period["title"])
+                          period["end"].strftime(DATE_FORMAT), period["title"], clean)
 
     if cmd == "/day":
         day = parse_day(args[0] if args else "вчера", today)
@@ -717,23 +735,24 @@ def handle_callback(cfg: dict, state: dict, spath: Path, cb: dict) -> None:
         return
 
     chat = menu.get("chat") or chat_ids(cfg)[0]
+    clean = menu.get("clean", False)
     stage = menu.get("stage", "value")
     if stage == "period":
         send_menu(cfg, state, spath, field_menu(option["from"], option["to"], option["title"]), chat)
     elif stage == "field":
         if option["v"] == "all":
-            report = build_report(cfg, menu["from"], menu["to"], menu["title"])
+            report = build_report(cfg, menu["from"], menu["to"], menu["title"], clean=clean)
             send_telegram(token, chat, report)
             log(f"кнопка: весь отчёт {menu['title']}")
         else:
-            result = build_menu(cfg, option["v"], menu["from"], menu["to"], menu["title"])
+            result = build_menu(cfg, option["v"], menu["from"], menu["to"], menu["title"], clean)
             if isinstance(result, str):
                 send_telegram(token, chat, result)
             else:
                 send_menu(cfg, state, spath, result, chat)
     else:
         report = build_report(cfg, menu["from"], menu["to"], menu["title"],
-                              extra={menu["field"]: option["v"]})
+                              extra={menu["field"]: option["v"]}, clean=clean)
         send_telegram(token, chat, report)
         log(f"кнопка: {menu['field']}={option['v']} → отчёт {menu['title']}")
 
@@ -807,7 +826,7 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
                         pass
                 continue
             try:
-                reply = process_command(cfg, text)
+                reply = process_command(cfg, text, clean=clean_mode(cfg, chat))
             except Exception as err:
                 reply = f"⚠️ Не удалось собрать отчёт: {html.escape(str(err)[:400])}"
             if reply is None:

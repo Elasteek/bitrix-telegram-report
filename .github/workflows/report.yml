@@ -50,6 +50,7 @@ jobs:
           BTR_TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           BTR_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           BTR_REPORT_CHAT_ID: ${{ vars.REPORT_CHAT_ID }}  # кому слать автоотчёты; пусто = всем чатам
+          BTR_CLEAN_CHATS: ${{ vars.CLEAN_CHATS }}  # чаты, где в отчётах нет «(без метки)»
           BTR_SEND_HOUR: ${{ inputs.send_hour || '9' }}   # во сколько слать отчёты (по TZ выше)
           BTR_REPORTS: ${{ vars.REPORTS || 'day,week,month' }}  # виды отчётов
           BTR_POLL_SECONDS: ${{ inputs.poll_seconds || '720' }}  # сколько слушать команды бота

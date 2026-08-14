@@ -3,6 +3,7 @@
   "telegram_token": "ТОКЕН_БОТА_ОТ_@BotFather",
   "telegram_chat_id": ["-100XXXXXXXXXX"],
   "report_chat_id": ["-100XXXXXXXXXX"],
+  "clean_chats": ["-100YYYYYYYYYY"],
   "period": "yesterday",
   "send_hour": 9,
   "reports": ["day", "week", "month"],
