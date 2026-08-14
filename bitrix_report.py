@@ -129,9 +129,11 @@ def count_leads(webhook: str, date_from: str, date_to: str, statuses: list, extr
         flt["STATUS_ID"] = statuses
     if extra:
         flt.update(extra)
-    # start=-1 — Битрикс24 вернёт только счётчик total, без списка лидов
-    data = call_bitrix(webhook, "crm.lead.list", {"filter": flt, "select": ["ID"], "start": -1})
-    return int(data.get("total", 0))
+    # start=0: нужен только счётчик total из ответа (трюк start=-1 на части порталов
+    # возвращает total=0, поэтому так делать нельзя)
+    data = call_bitrix(webhook, "crm.lead.list", {"filter": flt, "select": ["ID"], "start": 0})
+    total = data.get("total")
+    return int(total) if total is not None else len(data.get("result", []))
 
 
 def status_names(webhook: str) -> dict:

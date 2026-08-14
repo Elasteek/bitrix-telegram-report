@@ -7,7 +7,11 @@ name: Отчёт по лидам в Telegram
 on:
   schedule:
     - cron: "*/15 * * * *"
-  workflow_dispatch: {}   # ручной запуск со вкладки Actions
+  workflow_dispatch:
+    inputs:
+      send_hour:
+        description: "Час отправки для ручного запуска (укажите 0 — отправить сразу)"
+        default: ""
 
 # Не запускать несколько копий одновременно
 concurrency:
@@ -37,7 +41,7 @@ jobs:
           BTR_BITRIX_WEBHOOK: ${{ secrets.BITRIX_WEBHOOK }}
           BTR_TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           BTR_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          BTR_SEND_HOUR: "9"                     # во сколько слать отчёт (по TZ выше)
+          BTR_SEND_HOUR: ${{ inputs.send_hour || '9' }}   # во сколько слать отчёт (по TZ выше)
           BTR_STATUSES: ${{ vars.STATUSES }}     # напр.: NEW,IN_PROCESS
           BTR_UTM_SOURCES: ${{ vars.UTM_SOURCES }}  # напр.: yandex,vk
         run: python3 bitrix_report.py
