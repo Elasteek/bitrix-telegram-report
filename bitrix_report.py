@@ -350,26 +350,25 @@ def notify_error(cfg: dict, error: Exception) -> None:
 HELP_TEXT = (
     "🤖 <b>Отчёты по лидам Битрикс24</b>\n"
     "\n"
-    "📅 <b>Отчёты за период</b>\n"
-    "/day — за вчера\n"
-    "/day 14.08 — за конкретный день (можно 14.08.2026, 2026-08-14, «вчера»)\n"
-    "/week — за прошлую неделю (Пн–Вс)\n"
-    "/week 12.08 — неделя, в которую попадает дата\n"
-    "/month — за прошлый месяц\n"
-    "/month 07.2026 — за конкретный месяц\n"
+    "🔘 <b>Всё по кнопкам, без печати</b>\n"
+    "/report — период (вчера/сегодня/неделя/месяц) → весь отчёт "
+    "или разбивка по рекламе → значение\n"
+    "\n"
+    "📅 <b>Команды за период</b>\n"
+    "/day — за вчера · /day 14.08 — за конкретный день\n"
+    "/week — за прошлую неделю (Пн–Вс) · /week 12.08 — неделя по дате\n"
+    "/month — за прошлый месяц · /month 07.2026 — за конкретный\n"
     "/range 10.08 16.08 — свой период (макс 92 дня)\n"
     "\n"
-    "🔎 <b>Разбивка по рекламе — меню с кнопками</b>\n"
-    "/utmsource — источники за вчера\n"
-    "/utmcampaign week — кампании за прошлую неделю\n"
-    "/utmmedium, /utmcontent, /utmterm — так же\n"
-    "После команды можно указать день (14.08), week или month.\n"
-    "По нажатию кнопки приходит отчёт только по выбранному значению.\n"
+    "🔎 <b>Меню по рекламе</b> (кнопки со значениями и числом лидов):\n"
+    "/utmsource, /utmmedium, /utmcampaign, /utmcontent, /utmterm — за вчера;\n"
+    "к ним можно дописать дату, week или month: /utmcampaign week\n"
     "\n"
-    "⚡ <b>Короткая форма</b>: к любой команде периода допишите "
-    "<code>utm поле</code>:\n"
+    "⚡ <b>Короткая форма</b>: к команде периода допишите <code>utm поле</code>:\n"
     "/day 14.08 utm campaign · /range 10.08 16.08 utm content\n"
     "\n"
+    "ℹ️ Команда из меню «/» улетает сразу, без аргументов — для дат и своих "
+    "периодов печатайте их текстом, как в примерах выше, или жмите /report.\n"
     "Поля: source (источник), medium (канал), campaign (кампания), "
     "content (объявление), term (ключ)."
 )
@@ -386,16 +385,58 @@ FIELD_LABELS = {"UTM_SOURCE": "источник (utm_source)", "UTM_MEDIUM": "к
 
 
 def build_menu(cfg: dict, field: str, date_from: str, date_to: str, title: str):
-    """Меню с кнопками: значения UTM-поля за период + количество лидов у каждого."""
+    """Меню со значениями UTM-поля за период (третий шаг /report и «utm»-команд)."""
     leads = fetch_leads(cfg, date_from, date_to)
     counts = count_by(leads, field)
     if not counts:
         return f"Лидов за период {title} не было — выбирать не из чего."
-    options = {str(i): {"v": value, "n": count}
+    options = {str(i): {"btn": f"{value if len(value) <= 44 else value[:44] + '…'} · {count}",
+                        "v": value}
                for i, (value, count) in enumerate(list(counts.items())[:20])}
-    return {"kind": "menu", "text": f"🔎 {title} — выберите {FIELD_LABELS.get(field, field)}:",
+    return {"stage": "value", "text": f"🔎 {title} — выберите {FIELD_LABELS.get(field, field)}:",
             "field": field, "from": date_from, "to": date_to, "title": title,
             "options": options}
+
+
+def period_menu() -> dict:
+    """Первый шаг /report: выбор периода кнопками."""
+    now = datetime.now()
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    periods = completed_periods(now)
+    items = [("вчера", periods["day"]),
+             ("сегодня", {"start": today, "end": today + timedelta(days=1),
+                          "title": f"за {today:%d.%m.%Y} (сегодня)"}),
+             ("прошлая неделя (Пн–Вс)", periods["week"]),
+             ("прошлый месяц", periods["month"])]
+    options = {str(i): {"btn": label, "from": p["start"].strftime(DATE_FORMAT),
+                        "to": p["end"].strftime(DATE_FORMAT), "title": p["title"]}
+               for i, (label, p) in enumerate(items)}
+    return {"stage": "period", "text": "📅 Выберите период:", "options": options}
+
+
+def field_menu(date_from: str, date_to: str, title: str) -> dict:
+    """Второй шаг /report: весь отчёт или разбивка по одному UTM-полю."""
+    items = [("📊 Весь отчёт", "all")] + \
+            [(f"🔎 {label}", key) for key, label in FIELD_LABELS.items()]
+    options = {str(i): {"btn": btn, "v": value} for i, (btn, value) in enumerate(items)}
+    return {"stage": "field", "text": f"Что показать {title}?",
+            "from": date_from, "to": date_to, "title": title, "options": options}
+
+
+def send_menu(cfg: dict, state: dict, spath: Path, menu: dict) -> None:
+    """Регистрирует меню в state (живёт между запусками) и отправляет кнопки."""
+    menus = state.setdefault("menus", {})
+    mid = str(state.get("menu_seq", 0) + 1)
+    state["menu_seq"] = int(mid)
+    menus[mid] = menu
+    while len(menus) > 12:  # держим только свежие меню
+        menus.pop(next(iter(menus)))
+    save_state(spath, state)
+    keyboard = [[{"text": option["btn"], "callback_data": f"rpt:{mid}:{idx}"}]
+                for idx, option in menu["options"].items()]
+    send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"], menu["text"],
+                  reply_markup={"inline_keyboard": keyboard})
+    log(f"меню отправлено: {menu['text']} ({len(keyboard)} кнопок)")
 
 
 def parse_day(raw: str, today: datetime):
@@ -453,6 +494,9 @@ def process_command(cfg: dict, text: str):
 
     if cmd in ("/start", "/help"):
         return HELP_TEXT
+
+    if cmd == "/report":
+        return period_menu()
 
     # /utmsource, /utmcampaign, ... — меню кнопок из списка команд Telegram
     slash_field = SLASH_FIELD_COMMANDS.get(cmd.lstrip("/"))
@@ -532,8 +576,8 @@ def process_command(cfg: dict, text: str):
     return None
 
 
-def handle_callback(cfg: dict, state: dict, cb: dict) -> None:
-    """Нажатие кнопки меню — отчёт по выбранному значению UTM-поля."""
+def handle_callback(cfg: dict, state: dict, spath: Path, cb: dict) -> None:
+    """Нажатие кнопки меню: шаг /report, поле UTM или готовый отчёт по значению."""
     token = cfg["telegram_token"]
 
     def answer_cb(text=None):
@@ -552,10 +596,26 @@ def handle_callback(cfg: dict, state: dict, cb: dict) -> None:
     if option is None:
         answer_cb("Меню устарело — вызовите команду заново")
         return
-    report = build_report(cfg, menu["from"], menu["to"], menu["title"],
-                          extra={menu["field"]: option["v"]})
-    send_telegram(token, cfg["telegram_chat_id"], report)
-    log(f"кнопка: {menu['field']}={option['v']} → отчёт {menu['title']}")
+
+    stage = menu.get("stage", "value")
+    if stage == "period":
+        send_menu(cfg, state, spath, field_menu(option["from"], option["to"], option["title"]))
+    elif stage == "field":
+        if option["v"] == "all":
+            report = build_report(cfg, menu["from"], menu["to"], menu["title"])
+            send_telegram(token, cfg["telegram_chat_id"], report)
+            log(f"кнопка: весь отчёт {menu['title']}")
+        else:
+            result = build_menu(cfg, option["v"], menu["from"], menu["to"], menu["title"])
+            if isinstance(result, str):
+                send_telegram(token, cfg["telegram_chat_id"], result)
+            else:
+                send_menu(cfg, state, spath, result)
+    else:
+        report = build_report(cfg, menu["from"], menu["to"], menu["title"],
+                              extra={menu["field"]: option["v"]})
+        send_telegram(token, cfg["telegram_chat_id"], report)
+        log(f"кнопка: {menu['field']}={option['v']} → отчёт {menu['title']}")
 
 
 def handle_commands(cfg: dict, poll_seconds: int) -> None:
@@ -603,7 +663,7 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
             callback = update.get("callback_query")
             if callback:
                 try:
-                    handle_callback(cfg, state, callback)
+                    handle_callback(cfg, state, spath, callback)
                 except Exception as err:
                     log(f"ошибка обработки кнопки: {err}")
                 continue
@@ -619,20 +679,8 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
             if reply is None:
                 continue
             try:
-                if isinstance(reply, dict):  # меню с кнопками по значениям UTM-поля
-                    menus = state.setdefault("menus", {})
-                    mid = str(state.get("menu_seq", 0) + 1)
-                    state["menu_seq"] = int(mid)
-                    menus[mid] = reply
-                    while len(menus) > 8:  # держим только свежие меню
-                        menus.pop(next(iter(menus)))
-                    save_state(spath, state)
-                    keyboard = [[{"text": f"{opt['v'] if len(opt['v']) <= 44 else opt['v'][:44] + '…'} · {opt['n']}",
-                                  "callback_data": f"rpt:{mid}:{idx}"}]
-                                for idx, opt in reply["options"].items()]
-                    send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"],
-                                  reply["text"], reply_markup={"inline_keyboard": keyboard})
-                    log(f"меню отправлено: {reply['title']} ({len(keyboard)} кнопок)")
+                if isinstance(reply, dict):  # меню с кнопками
+                    send_menu(cfg, state, spath, reply)
                 else:
                     send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"], reply)
                     log(f"команда «{text}» выполнена")
