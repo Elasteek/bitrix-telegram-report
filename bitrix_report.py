@@ -484,13 +484,13 @@ def clean_attribution_sections(cfg: dict, leads: list, date_to: str) -> list:
 
 
 def weekly_lead_counts(cfg: dict, date_to: str, weeks: int = 8) -> dict:
-    """Счёт лидов по календарным неделям (Пн–Вс) за N недель до date_to."""
+    """Счёт СОЗДАННЫХ лидов по календарным неделям (Пн–Вс) за N недель.
+    Без фильтра статусов: старые лиды меняют статус со временем, и динамика
+    по статусам превращается в «4 → 70» вместо честного тренда."""
     end = datetime.strptime(date_to, DATE_FORMAT)
     start = (end - timedelta(days=7 * weeks)).strftime(DATE_FORMAT)
     webhook = cfg["bitrix_webhook"]
     flt = {">=DATE_CREATE": start, "<DATE_CREATE": date_to}
-    if cfg.get("statuses"):
-        flt["STATUS_ID"] = cfg["statuses"]
     counts, cursor, fetched = {}, 0, 0
     while True:
         data = call_bitrix(webhook, "crm.lead.list",
@@ -600,7 +600,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             f"{y_line}\n"
             f"• Неделя {week_start:%d.%m}–{week_end - timedelta(days=1):%d.%m.%Y}: "
             f"<b>{actual}</b> лидов (~{actual / 7:.0f}/день)\n"
-            f"• Динамика по неделям: {fmt(trend)}\n"
+            f"• Динамика по неделям (все созданные лиды): {fmt(trend)}\n"
             f"• Мой прогноз на неделю: {check}\n"
             + ("\n".join(month_lines) + "\n" if month_lines else "") +
             f"\n{verdict}\n"
@@ -787,11 +787,10 @@ def admin_mode(cfg: dict, chat_id) -> bool:
 
 
 def count_leads_between(cfg: dict, date_from: str, date_to: str) -> int:
-    """Лёгкий подсчёт лидов за период (нужен только счётчик total)."""
+    """Подсчёт СОЗДАННЫХ лидов за период (без фильтра статусов): приток трафика
+    не должен зависеть от того, в какой статус лид переехал позже."""
     webhook = cfg["bitrix_webhook"]
     flt = {">=DATE_CREATE": date_from, "<DATE_CREATE": date_to}
-    if cfg.get("statuses"):
-        flt["STATUS_ID"] = cfg["statuses"]
     data = call_bitrix(webhook, "crm.lead.list",
                        {"filter": flt, "select": ["ID"], "start": 0})
     total = data.get("total")
@@ -1310,13 +1309,12 @@ def process_command(cfg: dict, text: str, clean: bool = False, no_utm: bool = Fa
 
 
 def daily_lead_counts(cfg: dict, date_to: str, days: int = 28) -> dict:
-    """Счёт лидов по дням за N дней до date_to (для дневного прогноза)."""
+    """Счёт СОЗДАННЫХ лидов по дням за N дней (без фильтра статусов — см.
+    weekly_lead_counts)."""
     end = datetime.strptime(date_to, DATE_FORMAT)
     start = (end - timedelta(days=days)).strftime(DATE_FORMAT)
     webhook = cfg["bitrix_webhook"]
     flt = {">=DATE_CREATE": start, "<DATE_CREATE": date_to}
-    if cfg.get("statuses"):
-        flt["STATUS_ID"] = cfg["statuses"]
     counts, cursor, fetched = {}, 0, 0
     while True:
         data = call_bitrix(webhook, "crm.lead.list",
