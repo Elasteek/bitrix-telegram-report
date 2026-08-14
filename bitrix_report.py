@@ -348,26 +348,38 @@ def notify_error(cfg: dict, error: Exception) -> None:
 # ----------------------------- команды бота -----------------------------
 
 HELP_TEXT = (
-    "🤖 <b>Команды отчётов по лидам</b>\n"
-    "/day — отчёт за вчера\n"
-    "/day 14.08 — за конкретный день (можно 14.08.2026 или 2026-08-14)\n"
+    "🤖 <b>Отчёты по лидам Битрикс24</b>\n"
+    "\n"
+    "📅 <b>Отчёты за период</b>\n"
+    "/day — за вчера\n"
+    "/day 14.08 — за конкретный день (можно 14.08.2026, 2026-08-14, «вчера»)\n"
     "/week — за прошлую неделю (Пн–Вс)\n"
     "/week 12.08 — неделя, в которую попадает дата\n"
     "/month — за прошлый месяц\n"
     "/month 07.2026 — за конкретный месяц\n"
-    "/range 10.08 16.08 — произвольный период (макс 92 дня)\n"
+    "/range 10.08 16.08 — свой период (макс 92 дня)\n"
     "\n"
-    "К любой команде можно добавить <code>utm source</code> (или medium, campaign, "
-    "content, term) — бот покажет кнопки со значениями этого поля за период, "
-    "и по нажатию пришлёт отчёт только по выбранному.\n"
-    "Пример: <code>/day 14.08 utm campaign</code>\n"
+    "🔎 <b>Разбивка по рекламе — меню с кнопками</b>\n"
+    "/utmsource — источники за вчера\n"
+    "/utmcampaign week — кампании за прошлую неделю\n"
+    "/utmmedium, /utmcontent, /utmterm — так же\n"
+    "После команды можно указать день (14.08), week или month.\n"
+    "По нажатию кнопки приходит отчёт только по выбранному значению.\n"
     "\n"
-    "/help — эта справка"
+    "⚡ <b>Короткая форма</b>: к любой команде периода допишите "
+    "<code>utm поле</code>:\n"
+    "/day 14.08 utm campaign · /range 10.08 16.08 utm content\n"
+    "\n"
+    "Поля: source (источник), medium (канал), campaign (кампания), "
+    "content (объявление), term (ключ)."
 )
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 FIELD_ALIASES = {"source": "UTM_SOURCE", "src": "UTM_SOURCE", "medium": "UTM_MEDIUM",
                  "campaign": "UTM_CAMPAIGN", "camp": "UTM_CAMPAIGN", "content": "UTM_CONTENT",
                  "term": "UTM_TERM"}
+SLASH_FIELD_COMMANDS = {"utmsource": "UTM_SOURCE", "utmmedium": "UTM_MEDIUM",
+                        "utmcampaign": "UTM_CAMPAIGN", "utmcontent": "UTM_CONTENT",
+                        "utmterm": "UTM_TERM"}
 FIELD_LABELS = {"UTM_SOURCE": "источник (utm_source)", "UTM_MEDIUM": "канал (utm_medium)",
                 "UTM_CAMPAIGN": "кампания (utm_campaign)", "UTM_CONTENT": "объявление (utm_content)",
                 "UTM_TERM": "ключ (utm_term)"}
@@ -441,6 +453,26 @@ def process_command(cfg: dict, text: str):
 
     if cmd in ("/start", "/help"):
         return HELP_TEXT
+
+    # /utmsource, /utmcampaign, ... — меню кнопок из списка команд Telegram
+    slash_field = SLASH_FIELD_COMMANDS.get(cmd.lstrip("/"))
+    if slash_field:
+        arg = args[0].lower() if args else ""
+        if arg in ("week", "неделя"):
+            period = periods["week"]
+        elif arg in ("month", "месяц"):
+            period = periods["month"]
+        elif args:
+            day = parse_day(args[0], today)
+            if day is None:
+                return (f"⚠️ Не понял аргумент. Примеры: /{cmd.lstrip('/')} 14.08, "
+                        f"/{cmd.lstrip('/')} week, /{cmd.lstrip('/')} month или без аргумента (за вчера)")
+            period = {"start": day, "end": day + timedelta(days=1),
+                      "title": f"за {day:%d.%m.%Y}"}
+        else:
+            period = periods["day"]
+        return build_menu(cfg, slash_field, period["start"].strftime(DATE_FORMAT),
+                          period["end"].strftime(DATE_FORMAT), period["title"])
 
     if cmd == "/day":
         day = parse_day(args[0] if args else "вчера", today)
