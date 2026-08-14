@@ -619,7 +619,8 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
                                       (today + timedelta(days=1)).strftime(DATE_FORMAT))
         month_lines.append(f"• {MONTHS_RU[month_start.month - 1]}: {current} из "
                            f"{daily_goal * elapsed} ({current * 100 // (daily_goal * elapsed)}%) "
-                           f"— идёт {current / elapsed:.0f}/день")
+                           f"— фактический темп {current / elapsed:.0f}/день "
+                           f"при цели {daily_goal}")
 
     trend = " → ".join(str(c) for c in history[-6:])
     if clean:
@@ -867,7 +868,7 @@ def plan_progress_line(cfg: dict, plan: dict):
         pace = "в графике ✅"
     else:
         pace = f"отстаём ❌"
-    return (f"🎯 План {daily}/день · вчера {y_count} · среднее {current / elapsed:.0f}/день · "
+    return (f"🎯 План {daily}/день · вчера {y_count} · темп {current / elapsed:.0f}/день · "
             f"{MONTHS_RU[month_start.month - 1]} {current * 100 // expected}% · {pace}")
 
 
