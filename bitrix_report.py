@@ -95,6 +95,8 @@ def config_from_env() -> dict:
         "clean_chats": split("BTR_CLEAN_CHATS"),
         # чаты, чьи отчёты приходят без UTM-списков
         "no_utm_chats": split("BTR_NO_UTM_CHATS"),
+        # административный чат — здесь задаётся план (/plan)
+        "admin_chats": split("BTR_ADMIN_CHATS"),
         "send_hour": send_hour,
         "poll_seconds": poll_seconds,
         "reports": split("BTR_REPORTS") or ["day", "week", "month"],
@@ -558,6 +560,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
         forecast_line = f"Мой прогноз был <b>{stored}</b> → факт <b>{actual}</b> ({diff:+.0f}%) {mark}"
     else:
         forecast_line = "Прогноза на эту неделю не было (первый выпуск) — теперь буду вести"
+    plan_line = plan_progress_line(cfg, state.get("plan")) if state.get("plan") else None
 
     next_pred = forecast_next(history)
     next_monday = week_start + timedelta(days=7)
@@ -567,11 +570,13 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
         forecasts.pop(next(iter(forecasts)))
 
     trend = " → ".join(str(c) for c in history[-6:])
+    plan_block = f"{plan_line}\n" if plan_line else ""
     return (f"📈 <b>Прогноз по лидам</b>\n"
             f"Неделя {week_start:%d.%m}–{week_end - timedelta(days=1):%d.%m.%Y}: "
             f"<b>{actual}</b> лидов\n"
             f"Динамика по неделям: {fmt(trend)}\n"
-            f"{forecast_line}\n\n"
+            f"{forecast_line}\n"
+            f"{plan_block}\n"
             f"{verdict}\n"
             f"Прогноз на {next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y}: "
             f"<b>~{next_pred}</b> лидов")
@@ -621,9 +626,11 @@ def fmt(value: str, limit: int = 60) -> str:
 
 
 def build_report(cfg: dict, date_from: str, date_to: str, title: str,
-                 extra: dict = None, clean: bool = False, utm_fields=None) -> str:
+                 extra: dict = None, clean: bool = False, utm_fields=None,
+                 plan: dict = None) -> str:
     """Отчёт за период. clean=True — «чистый» режим без «(без метки)»;
-    utm_fields: None — все 5 UTM-разделов, [] — без них, список — только эти."""
+    utm_fields: None — все 5 UTM-разделов, [] — без них, список — только эти;
+    plan — месячный план (строка прогресса в шапке)."""
     utm_sources = cfg.get("utm_sources") or []
     leads = fetch_leads(cfg, date_from, date_to, extra)
 
@@ -633,6 +640,10 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
     if extra:
         field, value = next(iter(extra.items()))
         lines.append(f"фильтр: {FIELD_LABELS.get(field, field)} = {fmt(value)}")
+    if plan:
+        progress = plan_progress_line(cfg, plan)
+        if progress:
+            lines.append(progress)
     lines.append("")
 
     if not leads:
@@ -724,6 +735,83 @@ def no_utm_mode(cfg: dict, chat_id) -> bool:
     if isinstance(raw, str):
         raw = [raw]
     return str(chat_id) in {str(c).strip() for c in raw}
+
+
+def admin_mode(cfg: dict, chat_id) -> bool:
+    """Административный чат: только здесь можно задавать план (/plan)."""
+    raw = cfg.get("admin_chats") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return str(chat_id) in {str(c).strip() for c in raw}
+
+
+def count_leads_between(cfg: dict, date_from: str, date_to: str) -> int:
+    """Лёгкий подсчёт лидов за период (нужен только счётчик total)."""
+    webhook = cfg["bitrix_webhook"]
+    flt = {">=DATE_CREATE": date_from, "<DATE_CREATE": date_to}
+    if cfg.get("statuses"):
+        flt["STATUS_ID"] = cfg["statuses"]
+    data = call_bitrix(webhook, "crm.lead.list",
+                       {"filter": flt, "select": ["ID"], "start": 0})
+    total = data.get("total")
+    return int(total) if total is not None else len(data.get("result", []))
+
+
+def plan_progress_line(cfg: dict, plan: dict):
+    """Строка прогресса месячного плана: «600 из 300 (50%) · отстаём…»."""
+    if not plan or plan.get("month") != datetime.now().strftime("%Y-%m"):
+        return None
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = today.replace(day=1)
+    month_end = (month_start + timedelta(days=32)).replace(day=1)
+    target = int(plan.get("target") or 0)
+    if target <= 0:
+        return None
+    current = count_leads_between(cfg, month_start.strftime(DATE_FORMAT),
+                                  (today + timedelta(days=1)).strftime(DATE_FORMAT))
+    days_left = max((month_end - today).days, 1)
+    elapsed = max((today - month_start).days + 1, 1)
+    need_daily = max(-(-(target - current) // days_left), 0)
+    fact_daily = current / elapsed
+    if need_daily == 0:
+        pace = "план уже выполнен 🎉"
+    elif fact_daily >= need_daily * 1.05:
+        pace = f"опережаем 🚀 (нужно {need_daily}/день, идёт {fact_daily:.0f})"
+    elif fact_daily >= need_daily * 0.95:
+        pace = f"в графике ✅ ({need_daily}/день)"
+    else:
+        pace = f"отстаём ❌ — нужно {need_daily}/день, идёт {fact_daily:.0f}"
+    return (f"🎯 План на {MONTHS_RU[month_start.month - 1]}: "
+            f"{current} из {target} ({current * 100 // target}%) · {pace}")
+
+
+def handle_plan_command(cfg: dict, state: dict, spath: Path, text: str) -> str:
+    """/plan — план лидов до конца текущего месяца (задаётся в чате руководителя)."""
+    parts = text.split()
+    target = None
+    if len(parts) > 1:
+        arg = parts[1].lower()
+        if arg in ("удалить", "off", "сброс"):
+            if state.pop("plan", None) is not None:
+                save_state(spath, state)
+                return "🗑 План удалён."
+            return "Плана и не было."
+        if arg.isdigit():
+            target = int(arg)
+    if target is None:
+        plan = state.get("plan")
+        if not plan or plan.get("month") != datetime.now().strftime("%Y-%m"):
+            return ("🎯 Задание плана: <code>/plan 600</code> — суммарно лидов "
+                    "до конца текущего месяца.\nСейчас план не задан.")
+        line = plan_progress_line(cfg, plan)
+        return (f"Текущий план:\n{line}\n\n"
+                "Изменить: /plan 700 · удалить: /plan удалить")
+    if not 1 <= target <= 1000000:
+        return "⚠️ Дай число от 1 до 1 000 000."
+    state["plan"] = {"month": datetime.now().strftime("%Y-%m"), "target": target}
+    save_state(spath, state)
+    return (f"🎯 План принят: <b>{target}</b> лидов до конца месяца.\n\n"
+            f"{plan_progress_line(cfg, state['plan'])}")
 
 
 def send_to_all(cfg: dict, text: str, reply_markup: dict = None, chats: list = None) -> None:
@@ -846,7 +934,8 @@ def run_scheduled(cfg: dict, force: bool = False, only: str = None) -> None:
         for (clean, no_utm), chats in variants.items():
             send_to_all(cfg, build_report(cfg, date_from, date_to, rep["title"],
                                           clean=clean,
-                                          utm_fields=[] if no_utm else None),
+                                          utm_fields=[] if no_utm else None,
+                                          plan=state.get("plan")),
                         chats=chats)
         state.setdefault("sent", {})[rep["kind"]] = rep["key"]
         save_state(spath, state)
@@ -930,6 +1019,9 @@ HELP_TEXT = (
     "за неделю — в понедельник, за месяц — 1-го числа.\n"
     "• Считаются лиды в статусах: Новый, Прогрев, Попытка оплатить курс, "
     "Диалог с куратором, Диагностика, Конвертирован.\n"
+    "🎯 <b>ПЛАН НА МЕСЯЦ</b> (задаётся в группе руководителя):\n"
+    "/plan 600 — цель по лидам до конца месяца · /plan — прогресс · "
+    "/plan удалить — сброс. Прогресс виден в шапке каждого отчёта.\n"
     "• Если что-то сломалось — бот сам пришлёт ⚠️ с причиной."
 )
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -1045,10 +1137,11 @@ def month_bounds(month_start: datetime):
     return month_start, end
 
 
-def process_command(cfg: dict, text: str, clean: bool = False, no_utm: bool = False):
+def process_command(cfg: dict, text: str, clean: bool = False, no_utm: bool = False,
+                    plan: dict = None):
     """Ответ на команду из чата. None — молча проигнорировать (не команда).
 
-    Возврат: строка или dict-меню; clean/no_utm — режимы чата.
+    Возврат: строка или dict-меню; clean/no_utm/plan — режимы чата.
     """
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     parts = text.split()
@@ -1072,7 +1165,8 @@ def process_command(cfg: dict, text: str, clean: bool = False, no_utm: bool = Fa
     def answer(date_from, date_to, title):
         if utm_field:
             return build_menu(cfg, utm_field, date_from, date_to, title, clean)
-        return build_report(cfg, date_from, date_to, title, clean=clean, utm_fields=fields)
+        return build_report(cfg, date_from, date_to, title, clean=clean,
+                            utm_fields=fields, plan=plan)
 
     if cmd in ("/start", "/help"):
         return HELP_TEXT
@@ -1282,9 +1376,23 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
                     except Exception:
                         pass
                 continue
+            if text.split()[0].lower().split("@")[0] == "/plan":
+                try:
+                    reply = (handle_plan_command(cfg, state, spath, text)
+                             if admin_mode(cfg, chat)
+                             else "🔒 Задавать план можно только в группе руководителя.")
+                except Exception as err:
+                    reply = f"⚠️ {html.escape(str(err)[:300])}"
+                try:
+                    send_telegram(cfg["telegram_token"], chat, reply)
+                    log(f"команда «/plan» выполнена (чат {chat})")
+                except Exception as err:
+                    log(f"не удалось ответить на «/plan»: {err}")
+                continue
             try:
                 reply = process_command(cfg, text, clean=clean_mode(cfg, chat),
-                                        no_utm=no_utm_mode(cfg, chat))
+                                        no_utm=no_utm_mode(cfg, chat),
+                                        plan=state.get("plan"))
             except Exception as err:
                 reply = f"⚠️ Не удалось собрать отчёт: {html.escape(str(err)[:400])}"
             if reply is None:
