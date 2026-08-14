@@ -202,6 +202,26 @@ def count_products(leads: list) -> dict:
     return dict(sorted(counts.items(), key=lambda item: -item[1]))
 
 
+def build_summary(leads: list) -> list:
+    """Финальная выжимка: по каждому источнику — сколько лидов и что брали."""
+    groups = {}
+    for lead in leads:
+        source = (lead.get("UTM_SOURCE") or "").strip() or "(без метки)"
+        groups.setdefault(source, []).append(lead)
+    ordered = sorted(groups.items(), key=lambda item: -len(item[1]))
+    lines = []
+    for source, group in ordered[:5]:
+        products = count_products(group)
+        names = [name + (f" ({count})" if count > 1 else "")
+                 for name, count in list(products.items())[:3]]
+        tail = f" +{len(products) - 3} ещё" if len(products) > 3 else ""
+        took = ("; брали: " + ", ".join(names) + tail) if names else ""
+        lines.append(f"• <b>{len(group)}</b> — {fmt(source)}{took}")
+    if len(ordered) > 5:
+        lines.append(f"• …и ещё {len(ordered) - 5} источников")
+    return lines
+
+
 def fmt(value: str, limit: int = 60) -> str:
     if len(value) > limit:
         value = value[:limit] + "…"
@@ -251,7 +271,8 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str, extra: dic
             lines.append(f"• {fmt(names.get(status_id, status_id))}: <b>{count}</b>")
         lines.append("")
 
-    lines.append(f"Итого: <b>{len(leads)}</b>")
+    lines.append(f"📋 <b>Итог: {len(leads)}</b>")
+    lines.extend(build_summary(leads))
     return "\n".join(lines)
 
 
