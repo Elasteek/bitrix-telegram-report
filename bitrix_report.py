@@ -150,7 +150,7 @@ def fetch_leads(cfg: dict, date_from: str, date_to: str, extra: dict = None) -> 
         flt["UTM_SOURCE"] = cfg["utm_sources"]
     if extra:
         flt.update(extra)
-    fields = ["ID", "STATUS_ID", "UTM_SOURCE", "UTM_MEDIUM", "UTM_CAMPAIGN",
+    fields = ["ID", "STATUS_ID", "DATE_CREATE", "UTM_SOURCE", "UTM_MEDIUM", "UTM_CAMPAIGN",
               "UTM_CONTENT", "UTM_TERM", "UF_CRM_PRODUCT", "PHONE"]
     leads, start = [], 0
     while True:
@@ -361,9 +361,9 @@ ATTR_CACHE = {}
 
 
 def attribution_map(cfg: dict, date_to: str) -> dict:
-    """Телефон -> utm_source последнего лида с меткой за 90 дней до date_to.
-    Нужно для атрибуции: человек взял бесплатный урок по рекламе, а платный
-    курс оформил позже с другого устройства (лид уже без метки)."""
+    """Телефон -> {"source": метка последнего лида, "first": (дата, метка) первого}.
+    История за 90 дней до date_to. Нужна для атрибуции: человек взял бесплатный
+    урок по рекламе, а платный курс оформил позже с другого устройства."""
     key = (cfg["bitrix_webhook"], date_to[:10])
     if key in ATTR_CACHE:
         return ATTR_CACHE[key]
@@ -380,8 +380,16 @@ def attribution_map(cfg: dict, date_to: str) -> dict:
         for lead in page:
             source = (lead.get("UTM_SOURCE") or "").strip()
             phone = user_key(lead)
-            if source and not phone.startswith("lead-"):
-                mapping[phone] = source  # ASC-сортировка: последний перезапишет
+            if not source or phone.startswith("lead-"):
+                continue
+            rec = mapping.setdefault(phone, {"source": source, "first": None})
+            rec["source"] = source  # сортировка ASC: последняя метка перезапишет
+            if rec["first"] is None:
+                try:
+                    first_dt = datetime.fromisoformat(lead.get("DATE_CREATE", ""))
+                except ValueError:
+                    continue
+                rec["first"] = (first_dt, source)
         fetched += len(page)
         total = int(data.get("total") or 0)
         if not page or fetched >= total or fetched >= 3000:
@@ -394,14 +402,14 @@ def attribution_map(cfg: dict, date_to: str) -> dict:
 def clean_attribution_sections(cfg: dict, leads: list, date_to: str) -> list:
     """Блоки для рабочей группы: бесплатные уроки и попытки оплатить —
     только по меткам. Если у лида метки нет, источник ищется по телефону
-    в истории за 90 дней."""
+    в истории за 90 дней; у оплат показываем первый контакт и цикл продажи."""
     mapping = attribution_map(cfg, date_to)
     free_groups, users = {}, {}
 
     for lead in leads:
         key = user_key(lead)
         own = (lead.get("UTM_SOURCE") or "").strip()
-        user = users.setdefault(key, {"source": own, "paid": set()})
+        user = users.setdefault(key, {"source": own, "paid": set(), "pay_date": None})
         if own and not user["source"]:
             user["source"] = own
         free_set, paid_set = set(), set()
@@ -412,40 +420,62 @@ def clean_attribution_sections(cfg: dict, leads: list, date_to: str) -> list:
                 name, is_free = normalize_product(part)
                 if name:
                     (free_set if is_free else paid_set).add(name)
-        source = own or mapping.get(key, "")
+        source = own or mapping.get(key, {}).get("source", "")
         if source and free_set:
             group = free_groups.setdefault(source, {})
             for name in free_set:
                 group[name] = group.get(name, 0) + 1
         user["paid"].update(paid_set)
+        try:
+            created = datetime.fromisoformat(lead.get("DATE_CREATE") or "")
+            if paid_set and (user["pay_date"] is None or created > user["pay_date"]):
+                user["pay_date"] = created
+        except ValueError:
+            pass
 
-    paid_groups = {}
+    paid_groups, first_notes = {}, {}
     for key, user in users.items():
         if not user["paid"]:
             continue
-        source = user["source"] or mapping.get(key, "")
+        info = mapping.get(key) or {}
+        source = user["source"] or info.get("source", "")
         if not source:
             continue
         group = paid_groups.setdefault(source, {})
         for name in user["paid"]:
             group[name] = group.get(name, 0) + 1
+        first = info.get("first")
+        if first and user["pay_date"]:
+            first_dt, first_source = first
+            days = max((user["pay_date"] - first_dt).days, 0)
+            first_notes.setdefault(source, []).append(
+                f"первый контакт: {first_dt:%d.%m} по {first_source} · {days} дн. до оплаты")
 
-    def render(title, groups, emoji):
-        result = []
+    lines = []
+
+    def render_header(groups, title, emoji):
         if not groups:
-            return result
-        result.append("")
-        result.append(f"<b>{emoji} {title}:</b>")
-        top = sorted(groups.items(), key=lambda kv: -sum(kv[1].values()))[:5]
-        for source, names in top:
-            result.append(f"• {fmt(source)} — {sum(names.values())}")
-            for name, count in sorted(names.items(), key=lambda kv: -kv[1])[:5]:
-                result.append(f"↳ {fmt(name, 60)} — {plural_times(count)}")
-        return result
+            return False
+        lines.append("")
+        lines.append(f"<b>{emoji} {title}:</b>")
+        return True
 
-    lines = render("Бесплатные уроки по меткам", free_groups, "🎁")
-    lines += render("Попытка оплатить по меткам (поиск по телефону за 90 дней)",
-                    paid_groups, "💳")
+    if render_header(free_groups, "Бесплатные уроки по меткам", "🎁"):
+        for source, names in sorted(free_groups.items(),
+                                    key=lambda kv: -sum(kv[1].values()))[:5]:
+            lines.append(f"• {fmt(source)} — {sum(names.values())}")
+            for name, count in sorted(names.items(), key=lambda kv: -kv[1])[:5]:
+                lines.append(f"↳ {fmt(name, 60)} — {plural_times(count)}")
+
+    if render_header(paid_groups,
+                     "Попытка оплатить по меткам (поиск по телефону за 90 дней)", "💳"):
+        for source, names in sorted(paid_groups.items(),
+                                    key=lambda kv: -sum(kv[1].values()))[:5]:
+            lines.append(f"• {fmt(source)} — {sum(names.values())}")
+            for name, count in sorted(names.items(), key=lambda kv: -kv[1])[:5]:
+                lines.append(f"↳ {fmt(name, 60)} — {plural_times(count)}")
+            for note in first_notes.get(source, [])[:3]:
+                lines.append(f"↳ {note}")
     return lines
 
 
