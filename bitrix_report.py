@@ -131,14 +131,19 @@ def call_bitrix(webhook: str, method: str, params: dict) -> dict:
     raise RuntimeError(f"Битрикс24 недоступен ({method}): {last_error}")
 
 
-def fetch_leads(cfg: dict, date_from: str, date_to: str) -> list:
-    """Лиды за период: выбранные статусы × выбранные UTM_SOURCE (если заданы)."""
+def fetch_leads(cfg: dict, date_from: str, date_to: str, extra: dict = None) -> list:
+    """Лиды за период: выбранные статусы × выбранные UTM_SOURCE (если заданы).
+
+    extra — дополнительный фильтр вида {"UTM_SOURCE": "ig"} (кнопки меню).
+    """
     webhook = cfg["bitrix_webhook"]
     flt = {">=DATE_CREATE": date_from, "<DATE_CREATE": date_to}
     if cfg.get("statuses"):
         flt["STATUS_ID"] = cfg["statuses"]
     if cfg.get("utm_sources"):
         flt["UTM_SOURCE"] = cfg["utm_sources"]
+    if extra:
+        flt.update(extra)
     fields = ["ID", "STATUS_ID", "UTM_SOURCE", "UTM_MEDIUM", "UTM_CAMPAIGN",
               "UTM_CONTENT", "UTM_TERM"]
     leads, start = [], 0
@@ -179,13 +184,16 @@ def fmt(value: str, limit: int = 60) -> str:
     return html.escape(value)
 
 
-def build_report(cfg: dict, date_from: str, date_to: str, title: str) -> str:
+def build_report(cfg: dict, date_from: str, date_to: str, title: str, extra: dict = None) -> str:
     utm_sources = cfg.get("utm_sources") or []
-    leads = fetch_leads(cfg, date_from, date_to)
+    leads = fetch_leads(cfg, date_from, date_to, extra)
 
     lines = [f"📊 <b>Отчёт по лидам {title}</b>"]
     if utm_sources:
         lines.append(f"источники: {fmt(', '.join(utm_sources))}")
+    if extra:
+        field, value = next(iter(extra.items()))
+        lines.append(f"фильтр: {FIELD_LABELS.get(field, field)} = {fmt(value)}")
     lines.append("")
 
     if not leads:
@@ -216,10 +224,12 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str) -> str:
     return "\n".join(lines)
 
 
-def send_telegram(token: str, chat_id: str, text: str) -> None:
+def send_telegram(token: str, chat_id: str, text: str, reply_markup: dict = None) -> None:
     url = f"{TG_API}/bot{token}/sendMessage"
-    data = http_post_json(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-                          TG_TIMEOUT)
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    data = http_post_json(url, payload, TG_TIMEOUT)
     if not data.get("ok"):
         raise RuntimeError(f"Telegram API: {data.get('description', 'неизвестная ошибка')} "
                            f"(проверьте chat_id и права бота в группе)")
@@ -346,9 +356,34 @@ HELP_TEXT = (
     "/month — за прошлый месяц\n"
     "/month 07.2026 — за конкретный месяц\n"
     "/range 10.08 16.08 — произвольный период (макс 92 дня)\n"
+    "\n"
+    "К любой команде можно добавить <code>utm source</code> (или medium, campaign, "
+    "content, term) — бот покажет кнопки со значениями этого поля за период, "
+    "и по нажатию пришлёт отчёт только по выбранному.\n"
+    "Пример: <code>/day 14.08 utm campaign</code>\n"
+    "\n"
     "/help — эта справка"
 )
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+FIELD_ALIASES = {"source": "UTM_SOURCE", "src": "UTM_SOURCE", "medium": "UTM_MEDIUM",
+                 "campaign": "UTM_CAMPAIGN", "camp": "UTM_CAMPAIGN", "content": "UTM_CONTENT",
+                 "term": "UTM_TERM"}
+FIELD_LABELS = {"UTM_SOURCE": "источник (utm_source)", "UTM_MEDIUM": "канал (utm_medium)",
+                "UTM_CAMPAIGN": "кампания (utm_campaign)", "UTM_CONTENT": "объявление (utm_content)",
+                "UTM_TERM": "ключ (utm_term)"}
+
+
+def build_menu(cfg: dict, field: str, date_from: str, date_to: str, title: str):
+    """Меню с кнопками: значения UTM-поля за период + количество лидов у каждого."""
+    leads = fetch_leads(cfg, date_from, date_to)
+    counts = count_by(leads, field)
+    if not counts:
+        return f"Лидов за период {title} не было — выбирать не из чего."
+    options = {str(i): {"v": value, "n": count}
+               for i, (value, count) in enumerate(list(counts.items())[:20])}
+    return {"kind": "menu", "text": f"🔎 {title} — выберите {FIELD_LABELS.get(field, field)}:",
+            "field": field, "from": date_from, "to": date_to, "title": title,
+            "options": options}
 
 
 def parse_day(raw: str, today: datetime):
@@ -377,12 +412,32 @@ def month_bounds(month_start: datetime):
 
 
 def process_command(cfg: dict, text: str):
-    """Ответ на команду из чата. None — молча проигнорировать (не команда)."""
+    """Ответ на команду из чата. None — молча проигнорировать (не команда).
+
+    Возврат: строка (текст ответа) или dict вида build_menu (меню с кнопками).
+    """
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     parts = text.split()
     cmd = parts[0].lower().split("@")[0]
     args = parts[1:]
     periods = completed_periods(datetime.now())
+
+    # суффикс «utm <поле>» — меню с кнопками по значениям поля
+    utm_field = None
+    lower = [a.lower() for a in args]
+    if "utm" in lower:
+        i = lower.index("utm")
+        if i + 1 < len(lower) and lower[i + 1] in FIELD_ALIASES:
+            utm_field = FIELD_ALIASES[lower[i + 1]]
+            args = args[:i] + args[i + 2:]
+        else:
+            return ("⚠️ После utm укажите поле: source, medium, campaign, "
+                    "content или term. Пример: /day 14.08 utm source")
+
+    def answer(date_from, date_to, title):
+        if utm_field:
+            return build_menu(cfg, utm_field, date_from, date_to, title)
+        return build_report(cfg, date_from, date_to, title)
 
     if cmd in ("/start", "/help"):
         return HELP_TEXT
@@ -391,9 +446,9 @@ def process_command(cfg: dict, text: str):
         day = parse_day(args[0] if args else "вчера", today)
         if day is None:
             return "⚠️ Не понял дату. Примеры: /day 14.08 или /day 14.08.2026"
-        return build_report(cfg, day.strftime(DATE_FORMAT),
-                            (day + timedelta(days=1)).strftime(DATE_FORMAT),
-                            f"за {day:%d.%m.%Y}")
+        return answer(day.strftime(DATE_FORMAT),
+                      (day + timedelta(days=1)).strftime(DATE_FORMAT),
+                      f"за {day:%d.%m.%Y}")
 
     if cmd == "/week":
         if args:
@@ -403,9 +458,9 @@ def process_command(cfg: dict, text: str):
         else:
             ref = periods["week"]["start"] + timedelta(days=3)  # середина прошлой недели
         monday = ref - timedelta(days=ref.weekday())
-        return build_report(cfg, monday.strftime(DATE_FORMAT),
-                            (monday + timedelta(days=7)).strftime(DATE_FORMAT),
-                            f"за неделю {monday:%d.%m}–{monday + timedelta(days=6):%d.%m.%Y}")
+        return answer(monday.strftime(DATE_FORMAT),
+                      (monday + timedelta(days=7)).strftime(DATE_FORMAT),
+                      f"за неделю {monday:%d.%m}–{monday + timedelta(days=6):%d.%m.%Y}")
 
     if cmd == "/month":
         if args:
@@ -423,8 +478,8 @@ def process_command(cfg: dict, text: str):
         else:
             month = periods["month"]["start"]
         start, end = month_bounds(month)
-        return build_report(cfg, start.strftime(DATE_FORMAT), end.strftime(DATE_FORMAT),
-                            f"за {MONTHS_RU[start.month - 1]} {start:%Y}")
+        return answer(start.strftime(DATE_FORMAT), end.strftime(DATE_FORMAT),
+                      f"за {MONTHS_RU[start.month - 1]} {start:%Y}")
 
     if cmd == "/range":
         if len(args) < 2:
@@ -436,13 +491,39 @@ def process_command(cfg: dict, text: str):
             d1, d2 = d2, d1
         if (d2 - d1).days > 92:
             return "⚠️ Период слишком длинный, максимум 92 дня."
-        return build_report(cfg, d1.strftime(DATE_FORMAT),
-                            (d2 + timedelta(days=1)).strftime(DATE_FORMAT),
-                            f"за период {d1:%d.%m}–{d2:%d.%m.%Y}")
+        return answer(d1.strftime(DATE_FORMAT),
+                      (d2 + timedelta(days=1)).strftime(DATE_FORMAT),
+                      f"за период {d1:%d.%m}–{d2:%d.%m.%Y}")
 
     if cmd.startswith("/"):
         return f"Не знаю команду {cmd}\n\n{HELP_TEXT}"
     return None
+
+
+def handle_callback(cfg: dict, state: dict, cb: dict) -> None:
+    """Нажатие кнопки меню — отчёт по выбранному значению UTM-поля."""
+    token = cfg["telegram_token"]
+
+    def answer_cb(text=None):
+        try:
+            payload = {"callback_query_id": cb["id"]}
+            if text:
+                payload["text"] = text
+            http_post_json(f"{TG_API}/bot{token}/answerCallbackQuery", payload, 15)
+        except Exception:
+            pass  # не критично, если не удалось снять «часики» с кнопки
+
+    answer_cb()
+    data = (cb.get("data") or "").split(":")
+    menu = state.get("menus", {}).get(data[1]) if len(data) == 3 and data[0] == "rpt" else None
+    option = menu.get("options", {}).get(data[2]) if menu else None
+    if option is None:
+        answer_cb("Меню устарело — вызовите команду заново")
+        return
+    report = build_report(cfg, menu["from"], menu["to"], menu["title"],
+                          extra={menu["field"]: option["v"]})
+    send_telegram(token, cfg["telegram_chat_id"], report)
+    log(f"кнопка: {menu['field']}={option['v']} → отчёт {menu['title']}")
 
 
 def handle_commands(cfg: dict, poll_seconds: int) -> None:
@@ -468,7 +549,8 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
         timeout = 0 if single_pass else min(25, max(1, int(remaining)))
         try:
             data = http_post_json(url, {"timeout": timeout, "offset": offset,
-                                        "allowed_updates": ["message"]}, timeout + 15)
+                                        "allowed_updates": ["message", "callback_query"]},
+                                  timeout + 15)
         except Exception as err:
             log(f"getUpdates: {err}")
             if single_pass:
@@ -485,6 +567,15 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
             offset = max(offset, update["update_id"] + 1)
             state["tg_offset"] = offset
             save_state(spath, state)
+
+            callback = update.get("callback_query")
+            if callback:
+                try:
+                    handle_callback(cfg, state, callback)
+                except Exception as err:
+                    log(f"ошибка обработки кнопки: {err}")
+                continue
+
             message = update.get("message") or {}
             text = (message.get("text") or "").strip()
             if not text or str(message.get("chat", {}).get("id", "")) != chat_id:
@@ -496,8 +587,23 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
             if reply is None:
                 continue
             try:
-                send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"], reply)
-                log(f"команда «{text}» выполнена")
+                if isinstance(reply, dict):  # меню с кнопками по значениям UTM-поля
+                    menus = state.setdefault("menus", {})
+                    mid = str(state.get("menu_seq", 0) + 1)
+                    state["menu_seq"] = int(mid)
+                    menus[mid] = reply
+                    while len(menus) > 8:  # держим только свежие меню
+                        menus.pop(next(iter(menus)))
+                    save_state(spath, state)
+                    keyboard = [[{"text": f"{opt['v'] if len(opt['v']) <= 44 else opt['v'][:44] + '…'} · {opt['n']}",
+                                  "callback_data": f"rpt:{mid}:{idx}"}]
+                                for idx, opt in reply["options"].items()]
+                    send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"],
+                                  reply["text"], reply_markup={"inline_keyboard": keyboard})
+                    log(f"меню отправлено: {reply['title']} ({len(keyboard)} кнопок)")
+                else:
+                    send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"], reply)
+                    log(f"команда «{text}» выполнена")
             except Exception as err:
                 log(f"не удалось ответить на «{text}»: {err}")
         if single_pass:
