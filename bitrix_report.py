@@ -633,7 +633,8 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             + ("\n".join(month_lines) + "\n" if month_lines else "") +
             f"\n{verdict}\n"
             f"{current_week}"
-            f"🔮 Следующая неделя по текущему темпу: <b>~{next_pred}</b> лидов{forecast_gap}")
+            f"🔮 Следующая неделя по текущему темпу: <b>~{next_pred} за неделю</b> "
+            f"(~{next_pred / 7:.0f}/день){forecast_gap}")
 
 
 def build_plan(cfg: dict, week_start: datetime, week_end: datetime, plan: dict = None) -> str:
