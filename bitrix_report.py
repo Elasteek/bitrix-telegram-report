@@ -289,9 +289,27 @@ def normalize_product(part: str):
     return name, bool(is_free and name)
 
 
+def user_key(lead: dict) -> str:
+    """Ключ пользователя для дедупликации: нормализованный телефон, иначе ID лида."""
+    digits = ""
+    for phone in lead.get("PHONE") or []:
+        value = phone.get("VALUE") if isinstance(phone, dict) else None
+        digits = re.sub(r"\D", "", str(value or ""))
+        if len(digits) == 11 and digits.startswith("8"):
+            digits = "7" + digits[1:]
+        if digits:
+            break
+    return digits or f"lead-{lead.get('ID')}"
+
+
 def count_products(leads: list) -> tuple:
-    """-> (бесплатные, платные): {курс: сколько раз брали}, каждый по убыванию."""
-    free, paid = {}, {}
+    """-> (бесплатные, платные): {курс: сколько раз брали}, каждый по убыванию.
+
+    Бесплатные считаем по лидам (охват). Платные («Попытка оплатить») — по
+    уникальным людям: дубли одного пользователя за период (несколько лидов
+    с одним телефоном) объединяются в одну попытку."""
+    free = {}
+    paid_by_user = {}
     for lead in leads:
         raw = lead.get("UF_CRM_PRODUCT") or []
         items = raw if isinstance(raw, list) else [raw]
@@ -302,8 +320,16 @@ def count_products(leads: list) -> tuple:
                 if name:
                     entries.add((name, is_free))
         for name, is_free in entries:
-            target = free if is_free else paid
-            target[name] = target.get(name, 0) + 1
+            if is_free:
+                free[name] = free.get(name, 0) + 1
+        paid_names = {name for name, is_free in entries if not is_free}
+        if paid_names:
+            key = user_key(lead)
+            paid_by_user.setdefault(key, set()).update(paid_names)
+    paid = {}
+    for names in paid_by_user.values():
+        for name in names:
+            paid[name] = paid.get(name, 0) + 1
     by_count = lambda d: dict(sorted(d.items(), key=lambda item: -item[1]))
     return by_count(free), by_count(paid)
 
