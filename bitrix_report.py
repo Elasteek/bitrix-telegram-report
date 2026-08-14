@@ -608,14 +608,6 @@ def build_plan(cfg: dict, week_start: datetime, week_end: datetime) -> str:
             if top != "(без метки)" and top_n / len(leads) >= 0.5:
                 lines.append(f"• Зависимость: «{fmt(top)}» даёт {top_n * 100 // len(leads)}% "
                              f"лидов — диверсифицировать каналы")
-        _, paid = count_products(leads)
-        paid_users = sum(paid.values())
-        if paid_users == 0:
-            lines.append("• До оплаты никто не дошёл — дожимайте бесплатные уроки "
-                         "в первые 24 часа")
-        elif paid_users / len(leads) < 0.05:
-            lines.append(f"• До оплаты доходит всего {paid_users * 100 // len(leads)}% — "
-                         f"главный рычаг роста сейчас тут")
     return "\n".join(lines)
 
 
@@ -1079,14 +1071,15 @@ def period_menu() -> dict:
     options = {str(i): {"btn": label, "from": p["start"].strftime(DATE_FORMAT),
                         "to": p["end"].strftime(DATE_FORMAT), "title": p["title"]}
                for i, (label, p) in enumerate(items)}
+    # прогноз доступен сразу, первым тапом — без выбора периода и формата
+    options["f"] = {"btn": "📈 Прогноз и план", "v": "forecast"}
     return {"stage": "period", "text": "📅 Выберите период:", "options": options}
 
 
 def field_menu(date_from: str, date_to: str, title: str) -> dict:
     """Второй шаг /report: формат отчёта — краткий, полный или один UTM-список."""
     items = [("📊 Краткий (без UTM-списков)", "short"),
-             ("📋 Полный (все UTM-списки)", "all"),
-             ("📈 Прогноз и план", "forecast")] + \
+             ("📋 Полный (все UTM-списки)", "all")] + \
             [(f"🔎 Только {label.split(' (')[0]}", key)
              for key, label in FIELD_LABELS.items()]
     options = {str(i): {"btn": btn, "v": value} for i, (btn, value) in enumerate(items)}
@@ -1256,6 +1249,16 @@ def process_command(cfg: dict, text: str, clean: bool = False, no_utm: bool = Fa
     return None
 
 
+def forecast_and_plan_message(cfg: dict, state: dict) -> str:
+    """Прогноз + реальный план по последней завершённой неделе."""
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    monday = today - timedelta(days=today.weekday())
+    week_start = monday - timedelta(days=7)
+    week_end = week_start + timedelta(days=7)
+    return (build_forecast_message(cfg, state, week_start, week_end)
+            + "\n\n" + build_plan(cfg, week_start, week_end))
+
+
 def handle_callback(cfg: dict, state: dict, spath: Path, cb: dict) -> None:
     """Нажатие кнопки меню: шаг /report, поле UTM или готовый отчёт по значению."""
     token = cfg["telegram_token"]
@@ -1281,20 +1284,16 @@ def handle_callback(cfg: dict, state: dict, spath: Path, cb: dict) -> None:
     clean = menu.get("clean", False)
     stage = menu.get("stage", "value")
     if stage == "period":
+        if option.get("v") == "forecast":
+            send_telegram(token, chat, forecast_and_plan_message(cfg, state))
+            log("кнопка: прогноз и план (из главного меню)")
+            return
         send_menu(cfg, state, spath, field_menu(option["from"], option["to"], option["title"]), chat)
     elif stage == "field":
         value = option["v"]
         if value == "forecast":
-            end_dt = datetime.strptime(menu["to"], DATE_FORMAT)
-            anchor = end_dt - timedelta(seconds=1)
-            monday = (anchor - timedelta(days=anchor.weekday())).replace(
-                hour=0, minute=0, second=0, microsecond=0)
-            week_start = monday - timedelta(days=7)  # последняя завершённая неделя
-            week_end = week_start + timedelta(days=7)
-            message = build_forecast_message(cfg, state, week_start, week_end)
-            message += "\n\n" + build_plan(cfg, week_start, week_end)
-            send_telegram(token, chat, message)
-            log(f"кнопка: прогноз и план (от недели {week_start:%d.%m})")
+            send_telegram(token, chat, forecast_and_plan_message(cfg, state))
+            log("кнопка: прогноз и план")
             return
         utm_fields = None if value == "all" else ([] if value == "short" else [value])
         report = build_report(cfg, menu["from"], menu["to"], menu["title"],
