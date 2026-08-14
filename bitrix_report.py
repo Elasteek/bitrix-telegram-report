@@ -248,9 +248,27 @@ def count_countries(leads: list) -> dict:
     return dict(sorted(counts.items(), key=lambda item: -item[1]))
 
 
+def strip_product_suffix(name: str) -> str:
+    """Отрезает «приветственные» суффиксы: «Музыкальный продюсер Бесплатно» и
+    «… Бесплатная часть» — один курс с разных страниц. Доп. слова — через
+    переменную окружения BTR_PRODUCT_STRIP (через запятую)."""
+    markers = ["бесплатная часть", "бесплатный урок", "бесплатно", "вводный урок"]
+    extra = [m.strip() for m in (os.environ.get("BTR_PRODUCT_STRIP") or "").split(",")
+             if m.strip()]
+    pattern = re.compile(r"[\s\-–]*(?:" + "|".join(re.escape(m) for m in markers + extra)
+                         + r")\s*$", re.IGNORECASE)
+    for _ in range(2):
+        stripped = pattern.sub("", name).strip(" \t-–")
+        if stripped == name:
+            break
+        name = stripped
+    return name
+
+
 def count_products(leads: list) -> dict:
     """Сколько раз брали каждый урок/курс (UF_CRM_PRODUCT). У одного лида
-    может быть несколько продуктов; хвосты вида «- 1x0 = 0» отрезаем."""
+    может быть несколько продуктов; хвосты вида «- 1x0 = 0» отрезаем,
+    «приветственные» суффиксы объезжаем — курс один, страницы разные."""
     counts = {}
     for lead in leads:
         raw = lead.get("UF_CRM_PRODUCT") or []
@@ -261,6 +279,7 @@ def count_products(leads: list) -> dict:
                 name = re.sub(r"\s*=\s*\d+\s*$", "", part.strip())       # « = 0»
                 name = re.sub(r"\s*-\s*\d+x\d+\s*$", "", name)           # « - 1x0»
                 name = re.sub(r"\s+", " ", name).strip()
+                name = strip_product_suffix(name)
                 if name:
                     names.add(name)
         for name in names:
