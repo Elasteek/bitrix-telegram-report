@@ -577,6 +577,43 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             f"<b>~{next_pred}</b> лидов")
 
 
+def build_plan(cfg: dict, week_start: datetime, week_end: datetime) -> str:
+    """«Реальный план» к прогнозу: цель на неделю + рычаги роста из данных."""
+    counts = weekly_lead_counts(cfg, week_end.strftime(DATE_FORMAT))
+    key = week_start.strftime("%Y-%m-%d")
+    actual = counts.get(key, 0)
+    history = [c for _, c in sorted(counts.items())]
+    target = max(round(max(forecast_next(history), actual) * 1.05), 1)
+    daily = -(-target // 7)  # округление вверх
+    next_monday = week_start + timedelta(days=7)
+    lines = [f"📋 <b>Реальный план на неделю "
+             f"{next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y}:</b>",
+             f"• Цель: <b>≥ {target} лидов</b> (+5% к прогнозу) — это ~{daily} в день"]
+
+    leads = fetch_leads(cfg, week_start.strftime(DATE_FORMAT),
+                        week_end.strftime(DATE_FORMAT))
+    if leads:
+        no_utm = sum(1 for l in leads if not (l.get("UTM_SOURCE") or "").strip())
+        if no_utm / len(leads) >= 0.3:
+            lines.append(f"• Починить UTM-метки: {no_utm * 100 // len(leads)}% лидов "
+                         f"без метки — реклама вслепую")
+        src_counts = count_by(leads, "UTM_SOURCE")
+        if src_counts:
+            top, top_n = next(iter(src_counts.items()))
+            if top != "(без метки)" and top_n / len(leads) >= 0.5:
+                lines.append(f"• Зависимость: «{fmt(top)}» даёт {top_n * 100 // len(leads)}% "
+                             f"лидов — диверсифицировать каналы")
+        _, paid = count_products(leads)
+        paid_users = sum(paid.values())
+        if paid_users == 0:
+            lines.append("• До оплаты никто не дошёл — дожимайте бесплатные уроки "
+                         "в первые 24 часа")
+        elif paid_users / len(leads) < 0.05:
+            lines.append(f"• До оплаты доходит всего {paid_users * 100 // len(leads)}% — "
+                         f"главный рычаг роста сейчас тут")
+    return "\n".join(lines)
+
+
 def fmt(value: str, limit: int = 60) -> str:
     if len(value) > limit:
         value = value[:limit] + "…"
@@ -852,8 +889,8 @@ HELP_TEXT = (
     "\n"
     "🔘 <b>КОНСТРУКТОР ПО КНОПКАМ (ничего печатать не надо)</b>\n"
     "/report → период (вчера, сегодня, эта/прошлая неделя, этот/прошлый месяц, "
-    "90 дней) → формат: краткий без UTM-списков, полный или один конкретный "
-    "(источник / канал / кампания / объявление / ключ)\n"
+    "90 дней) → формат: краткий без UTM-списков, полный, один конкретный список "
+    "или 📈 прогноз с реальным планом\n"
     "Просто отправьте команду и нажимайте кнопки.\n"
     "\n"
     "📅 <b>ОТЧЁТЫ ЗА ПЕРИОД</b>\n"
@@ -956,7 +993,8 @@ def period_menu() -> dict:
 def field_menu(date_from: str, date_to: str, title: str) -> dict:
     """Второй шаг /report: формат отчёта — краткий, полный или один UTM-список."""
     items = [("📊 Краткий (без UTM-списков)", "short"),
-             ("📋 Полный (все UTM-списки)", "all")] + \
+             ("📋 Полный (все UTM-списки)", "all"),
+             ("📈 Прогноз и план", "forecast")] + \
             [(f"🔎 Только {label.split(' (')[0]}", key)
              for key, label in FIELD_LABELS.items()]
     options = {str(i): {"btn": btn, "v": value} for i, (btn, value) in enumerate(items)}
@@ -1152,6 +1190,18 @@ def handle_callback(cfg: dict, state: dict, spath: Path, cb: dict) -> None:
         send_menu(cfg, state, spath, field_menu(option["from"], option["to"], option["title"]), chat)
     elif stage == "field":
         value = option["v"]
+        if value == "forecast":
+            end_dt = datetime.strptime(menu["to"], DATE_FORMAT)
+            anchor = end_dt - timedelta(seconds=1)
+            monday = (anchor - timedelta(days=anchor.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+            week_start = monday - timedelta(days=7)  # последняя завершённая неделя
+            week_end = week_start + timedelta(days=7)
+            message = build_forecast_message(cfg, state, week_start, week_end)
+            message += "\n\n" + build_plan(cfg, week_start, week_end)
+            send_telegram(token, chat, message)
+            log(f"кнопка: прогноз и план (от недели {week_start:%d.%m})")
+            return
         utm_fields = None if value == "all" else ([] if value == "short" else [value])
         report = build_report(cfg, menu["from"], menu["to"], menu["title"],
                               clean=clean, utm_fields=utm_fields)
