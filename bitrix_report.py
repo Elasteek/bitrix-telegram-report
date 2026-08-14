@@ -614,15 +614,15 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
     trend = " → ".join(str(c) for c in history[-6:])
     try:
         wtd, projected, days_left_w = current_week_projection(cfg)
-        current_week = (f"🔮 Текущая неделя: уже {wtd}, к воскресенью выйдем "
-                        f"на <b>~{projected}</b>\n")
+        current_week = (f"🔮 Текущая неделя: уже {wtd}, к воскресенью будет "
+                        f"<b>~{projected} за неделю</b> (~{projected / 7:.0f}/день)\n")
     except Exception:
         current_week = ""
     forecast_gap = ""
     if daily_goal:
         short = daily_goal * 7 - next_pred
         if short > 0:
-            forecast_gap = f" — до цели не хватает {short}"
+            forecast_gap = f" — до цели {daily_goal}/день не хватает {short} за неделю"
     return (f"{goal_line}"
             f"📉 <b>Реальность:</b>\n"
             f"{y_line}\n"
