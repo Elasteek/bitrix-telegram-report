@@ -528,6 +528,28 @@ def forecast_next(series: list) -> int:
     return max(round(intercept + slope * n), 1)
 
 
+def current_week_projection(cfg: dict):
+    """Проекция текущей недели: факт с понедельника + средние по оставшимся
+    дням недели (с учётом сезона дня недели). -> (факт, итог, осталось дней)."""
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    monday = today - timedelta(days=today.weekday())
+    counts = daily_lead_counts(cfg, (today + timedelta(days=1)).strftime(DATE_FORMAT))
+    hist = sorted(counts.items())
+    mkey = monday.strftime("%Y-%m-%d")
+    wtd = sum(c for d, c in hist if d >= mkey)
+    last14 = [c for _, c in hist[-14:]]
+    overall = sum(last14) / len(last14) if last14 else 0
+    future = 0
+    day = today + timedelta(days=1)
+    while day.weekday() != 0:  # завтра .. воскресенье
+        same = [c for k, c in hist
+                if datetime.strptime(k, "%Y-%m-%d").weekday() == day.weekday()]
+        avg = sum(same) / len(same) if same else overall
+        future += round(avg)
+        day += timedelta(days=1)
+    return wtd, wtd + future, 7 - today.weekday() - 1
+
+
 def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
                            week_end: datetime) -> str:
     """Недельное сообщение в человеческом порядке: Цель → Реальность (вчера +
@@ -590,6 +612,12 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
                            f"— идёт {current / elapsed:.0f}/день")
 
     trend = " → ".join(str(c) for c in history[-6:])
+    try:
+        wtd, projected, days_left_w = current_week_projection(cfg)
+        current_week = (f"🔮 Текущая неделя: уже {wtd}, к воскресенью выйдем "
+                        f"на <b>~{projected}</b>\n")
+    except Exception:
+        current_week = ""
     forecast_gap = ""
     if daily_goal:
         short = daily_goal * 7 - next_pred
@@ -604,6 +632,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             f"• Мой прогноз на неделю: {check}\n"
             + ("\n".join(month_lines) + "\n" if month_lines else "") +
             f"\n{verdict}\n"
+            f"{current_week}"
             f"🔮 Следующая неделя по текущему темпу: <b>~{next_pred}</b> лидов{forecast_gap}")
 
 
