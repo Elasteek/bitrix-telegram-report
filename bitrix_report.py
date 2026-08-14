@@ -1158,7 +1158,7 @@ HELP_WORK = (
 )
 
 
-def build_help(admin: bool, clean: bool) -> str:
+def build_help(admin: bool = False, clean: bool = False) -> str:
     """Инструкция зависит от чата: своя для чата руководителя, своя для
     рекламного (рабочего)."""
     if admin:
