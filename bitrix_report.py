@@ -249,16 +249,23 @@ def count_countries(leads: list) -> dict:
 
 
 def strip_product_suffix(name: str) -> str:
-    """Отрезает «приветственные» суффиксы: «Музыкальный продюсер Бесплатно» и
-    «… Бесплатная часть» — один курс с разных страниц. Доп. слова — через
-    переменную окружения BTR_PRODUCT_STRIP (через запятую)."""
+    """Приводит название курса к каноничному виду:
+    «Музыкальный продюсер Бесплатно», «… Бесплатная часть» и
+    «… Тариф С поддержкойот 1 875 /мес…» — один курс с разных страниц.
+    Доп. отрезаемые суффиксы — через BTR_PRODUCT_STRIP (через запятую)."""
     markers = ["бесплатная часть", "бесплатный урок", "бесплатно", "вводный урок"]
     extra = [m.strip() for m in (os.environ.get("BTR_PRODUCT_STRIP") or "").split(",")
              if m.strip()]
-    pattern = re.compile(r"[\s\-–]*(?:" + "|".join(re.escape(m) for m in markers + extra)
+    freebie = re.compile(r"[\s\-–]*(?:" + "|".join(re.escape(m) for m in markers + extra)
                          + r")\s*$", re.IGNORECASE)
+    tariff = re.compile(r"\s+тариф\b.*$", re.IGNORECASE)          # « Тариф С поддержкой…»
+    prefix = re.compile(r"^(?:видео)?курс[:\s]\s*", re.IGNORECASE)  # ведущее «Курс: »
     for _ in range(2):
-        stripped = pattern.sub("", name).strip(" \t-–")
+        stripped = tariff.sub("", name)
+        stripped = freebie.sub("", stripped)
+        stripped = prefix.sub("", stripped)
+        stripped = stripped.strip(" \t-–«»\"'")
+        stripped = re.sub(r"\s+", " ", stripped)
         if stripped == name:
             break
         name = stripped
