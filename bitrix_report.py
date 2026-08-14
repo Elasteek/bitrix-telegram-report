@@ -249,49 +249,63 @@ def count_countries(leads: list) -> dict:
 
 
 def strip_product_suffix(name: str) -> str:
-    """Приводит название курса к каноничному виду:
-    «Музыкальный продюсер Бесплатно», «… Бесплатная часть» и
-    «… Тариф С поддержкойот 1 875 /мес…» — один курс с разных страниц.
-    Доп. отрезаемые суффиксы — через BTR_PRODUCT_STRIP (через запятую)."""
+    """Отрезает «приветственные» суффиксы: «Музыкальный продюсер Бесплатно» и
+    «… Бесплатная часть» — один бесплатный курс с разных страниц.
+    Доп. слова — через переменную окружения BTR_PRODUCT_STRIP (через запятую)."""
     markers = ["бесплатная часть", "бесплатный урок", "бесплатно", "вводный урок"]
     extra = [m.strip() for m in (os.environ.get("BTR_PRODUCT_STRIP") or "").split(",")
              if m.strip()]
-    freebie = re.compile(r"[\s\-–]*(?:" + "|".join(re.escape(m) for m in markers + extra)
+    pattern = re.compile(r"[\s\-–]*(?:" + "|".join(re.escape(m) for m in markers + extra)
                          + r")\s*$", re.IGNORECASE)
-    tariff = re.compile(r"\s+тариф\b.*$", re.IGNORECASE)          # « Тариф С поддержкой…»
-    prefix = re.compile(r"^(?:видео)?курс[:\s]\s*", re.IGNORECASE)  # ведущее «Курс: »
     for _ in range(2):
-        stripped = tariff.sub("", name)
-        stripped = freebie.sub("", stripped)
-        stripped = prefix.sub("", stripped)
-        stripped = stripped.strip(" \t-–«»\"'")
-        stripped = re.sub(r"\s+", " ", stripped)
+        stripped = pattern.sub("", name).strip(" \t-–")
         if stripped == name:
             break
         name = stripped
     return name
 
 
-def count_products(leads: list) -> dict:
-    """Сколько раз брали каждый урок/курс (UF_CRM_PRODUCT). У одного лида
-    может быть несколько продуктов; хвосты вида «- 1x0 = 0» отрезаем,
-    «приветственные» суффиксы объезжаем — курс один, страницы разные."""
-    counts = {}
+PRICE_TAIL = re.compile(r"\s*-\s*(\d+)\s*x\s*(\d+)(?:\s*=\s*[\d\s]+)?\s*$", re.IGNORECASE)
+MONTHLY_TAIL = re.compile(r"\s*от\s+[\d\s.,]+\s*/\s*мес.*$", re.IGNORECASE)
+FREE_WORDS = re.compile(r"бесплатн|вводный урок", re.IGNORECASE)
+
+
+def normalize_product(part: str):
+    """-> (каноничное имя, бесплатный ли). Бесплатные варианты курса склеиваются,
+    платные («Тариф …») живут отдельно. Бесплатность — по цене в хвосте «1x0»
+    либо по слову «бесплатно/вводный урок»."""
+    name = part.strip()
+    m = PRICE_TAIL.search(name)
+    price = int(m.group(2)) if m else None
+    if m:
+        name = name[:m.start()].strip()
+    name = MONTHLY_TAIL.sub("", name)                                  # «от 1 875 /мес…»
+    name = re.sub(r"^(?:видео)?курс[:\s]\s*", "", name, flags=re.IGNORECASE)  # «Курс: »
+    name = re.sub(r"\s+", " ", name).strip(" \t-–«»\"'")
+    is_free = (price == 0 or (price is None and bool(FREE_WORDS.search(name)))) \
+        and not re.search(r"\bтариф\b", name, re.IGNORECASE)
+    if is_free:
+        name = strip_product_suffix(name)
+    return name, bool(is_free and name)
+
+
+def count_products(leads: list) -> tuple:
+    """-> (бесплатные, платные): {курс: сколько раз брали}, каждый по убыванию."""
+    free, paid = {}, {}
     for lead in leads:
         raw = lead.get("UF_CRM_PRODUCT") or []
         items = raw if isinstance(raw, list) else [raw]
-        names = set()
+        entries = set()
         for item in items:
             for part in str(item).split(";"):
-                name = re.sub(r"\s*=\s*\d+\s*$", "", part.strip())       # « = 0»
-                name = re.sub(r"\s*-\s*\d+x\d+\s*$", "", name)           # « - 1x0»
-                name = re.sub(r"\s+", " ", name).strip()
-                name = strip_product_suffix(name)
+                name, is_free = normalize_product(part)
                 if name:
-                    names.add(name)
-        for name in names:
-            counts[name] = counts.get(name, 0) + 1
-    return dict(sorted(counts.items(), key=lambda item: -item[1]))
+                    entries.add((name, is_free))
+        for name, is_free in entries:
+            target = free if is_free else paid
+            target[name] = target.get(name, 0) + 1
+    by_count = lambda d: dict(sorted(d.items(), key=lambda item: -item[1]))
+    return by_count(free), by_count(paid)
 
 
 def plural_times(n: int) -> str:
@@ -373,14 +387,17 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
     lines.append(f"📋 <b>Итог по меткам: {len(leads)}</b>")
     lines.extend(build_summary(leads, clean))
 
-    products = list(count_products(leads).items())
-    if products:
+    free_products, paid_products = count_products(leads)
+    if free_products:
         lines.append("")
-        lines.append("<b>📚 Что брали (от большего к меньшему):</b>")
-        for name, count in products[:15]:
+        lines.append("<b>🎁 Бесплатные уроки (от большего к меньшему):</b>")
+        for name, count in list(free_products.items())[:15]:
             lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
-        if len(products) > 15:
-            lines.append(f"• …и ещё {len(products) - 15}")
+    if paid_products:
+        lines.append("")
+        lines.append("<b>💰 Платные (от большего к меньшему):</b>")
+        for name, count in list(paid_products.items())[:10]:
+            lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
     return "\n".join(lines)
 
 
