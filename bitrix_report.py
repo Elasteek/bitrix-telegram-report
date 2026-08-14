@@ -582,18 +582,51 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             f"<b>~{next_pred}</b> лидов")
 
 
-def build_plan(cfg: dict, week_start: datetime, week_end: datetime) -> str:
-    """«Реальный план» к прогнозу: цель на неделю + рычаги роста из данных."""
+def build_plan(cfg: dict, week_start: datetime, week_end: datetime, plan: dict = None) -> str:
+    """«Реальный план»: если задан месячный план — считаем от остатка до цели
+    (сколько нужно в неделю, чтобы догнать, с честной оценкой разрыва);
+    без плана — цель +5% к тренду."""
     counts = weekly_lead_counts(cfg, week_end.strftime(DATE_FORMAT))
     key = week_start.strftime("%Y-%m-%d")
     actual = counts.get(key, 0)
     history = [c for _, c in sorted(counts.items())]
-    target = max(round(max(forecast_next(history), actual) * 1.05), 1)
-    daily = -(-target // 7)  # округление вверх
+    trend = forecast_next(history)
     next_monday = week_start + timedelta(days=7)
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
     lines = [f"📋 <b>Реальный план на неделю "
-             f"{next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y}:</b>",
-             f"• Цель: <b>≥ {target} лидов</b> (+5% к прогнозу) — это ~{daily} в день"]
+             f"{next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y}:</b>"]
+    if plan and plan.get("month") == today.strftime("%Y-%m") and int(plan.get("target") or 0):
+        target_month = int(plan["target"])
+        month_start = today.replace(day=1)
+        month_end = (month_start + timedelta(days=32)).replace(day=1)
+        current = count_leads_between(cfg, month_start.strftime(DATE_FORMAT),
+                                      (today + timedelta(days=1)).strftime(DATE_FORMAT))
+        remaining = max(target_month - current, 0)
+        if remaining == 0:
+            lines.append(f"• План месяца ({target_month}) уже выполнен — "
+                         f"держим темп ~{trend}/нед 🎉")
+        else:
+            weeks_left = max((month_end - today).days / 7, 0.5)
+            need_weekly = int(-(-remaining // weeks_left))
+            lines.append(f"• Чтобы выполнить план месяца ({target_month}), нужно "
+                         f"<b>≥ {need_weekly} лидов/нед</b> (~{need_weekly / 7:.0f}/день)")
+            gap = need_weekly / max(actual, 1)
+            if gap >= 2:
+                lines.append(f"• Честно: последняя неделя дала {actual}, тренд ~{trend}/нед — "
+                             f"план требует <b>×{gap:.1f}</b> к текущему темпу. Либо резкое "
+                             f"масштабирование трафика, либо пересмотреть /plan")
+            elif gap >= 1.3:
+                lines.append(f"• Тренд ~{trend}/нед — придётся ускориться в "
+                             f"{gap:.1f} раза, но достижимо")
+            else:
+                lines.append(f"• Тренд ~{trend}/нед — идём в графике ✅")
+    else:
+        target = max(round(max(trend, actual) * 1.05), 1)
+        daily = -(-target // 7)
+        lines.append(f"• Цель: <b>≥ {target} лидов</b> (+5% к тренду) — это ~{daily} в день")
+        lines.append("• (Месячный план не задан — задайте /plan 400 в группе руководителя, "
+                     "и план будет считаться от цели)")
 
     leads = fetch_leads(cfg, week_start.strftime(DATE_FORMAT),
                         week_end.strftime(DATE_FORMAT))
@@ -1256,7 +1289,7 @@ def forecast_and_plan_message(cfg: dict, state: dict) -> str:
     week_start = monday - timedelta(days=7)
     week_end = week_start + timedelta(days=7)
     return (build_forecast_message(cfg, state, week_start, week_end)
-            + "\n\n" + build_plan(cfg, week_start, week_end))
+            + "\n\n" + build_plan(cfg, week_start, week_end, plan=state.get("plan")))
 
 
 def handle_callback(cfg: dict, state: dict, spath: Path, cb: dict) -> None:
