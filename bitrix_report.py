@@ -357,6 +357,98 @@ def build_summary(leads: list, clean: bool = False) -> list:
     return lines
 
 
+ATTR_CACHE = {}
+
+
+def attribution_map(cfg: dict, date_to: str) -> dict:
+    """Телефон -> utm_source последнего лида с меткой за 90 дней до date_to.
+    Нужно для атрибуции: человек взял бесплатный урок по рекламе, а платный
+    курс оформил позже с другого устройства (лид уже без метки)."""
+    key = (cfg["bitrix_webhook"], date_to[:10])
+    if key in ATTR_CACHE:
+        return ATTR_CACHE[key]
+    end = datetime.strptime(date_to, DATE_FORMAT)
+    start = (end - timedelta(days=90)).strftime(DATE_FORMAT)
+    webhook = cfg["bitrix_webhook"]
+    mapping, fetched, cursor = {}, 0, 0
+    while True:
+        data = call_bitrix(webhook, "crm.lead.list", {
+            "filter": {">=DATE_CREATE": start, "<DATE_CREATE": date_to},
+            "select": ["ID", "PHONE", "UTM_SOURCE", "DATE_CREATE"],
+            "order": {"DATE_CREATE": "ASC"}, "start": cursor})
+        page = data.get("result", [])
+        for lead in page:
+            source = (lead.get("UTM_SOURCE") or "").strip()
+            phone = user_key(lead)
+            if source and not phone.startswith("lead-"):
+                mapping[phone] = source  # ASC-сортировка: последний перезапишет
+        fetched += len(page)
+        total = int(data.get("total") or 0)
+        if not page or fetched >= total or fetched >= 3000:
+            break
+        cursor += len(page)
+    ATTR_CACHE[key] = mapping
+    return mapping
+
+
+def clean_attribution_sections(cfg: dict, leads: list, date_to: str) -> list:
+    """Блоки для рабочей группы: бесплатные уроки и попытки оплатить —
+    только по меткам. Если у лида метки нет, источник ищется по телефону
+    в истории за 90 дней."""
+    mapping = attribution_map(cfg, date_to)
+    free_groups, users = {}, {}
+
+    for lead in leads:
+        key = user_key(lead)
+        own = (lead.get("UTM_SOURCE") or "").strip()
+        user = users.setdefault(key, {"source": own, "paid": set()})
+        if own and not user["source"]:
+            user["source"] = own
+        free_set, paid_set = set(), set()
+        raw = lead.get("UF_CRM_PRODUCT") or []
+        items = raw if isinstance(raw, list) else [raw]
+        for item in items:
+            for part in str(item).split(";"):
+                name, is_free = normalize_product(part)
+                if name:
+                    (free_set if is_free else paid_set).add(name)
+        source = own or mapping.get(key, "")
+        if source and free_set:
+            group = free_groups.setdefault(source, {})
+            for name in free_set:
+                group[name] = group.get(name, 0) + 1
+        user["paid"].update(paid_set)
+
+    paid_groups = {}
+    for key, user in users.items():
+        if not user["paid"]:
+            continue
+        source = user["source"] or mapping.get(key, "")
+        if not source:
+            continue
+        group = paid_groups.setdefault(source, {})
+        for name in user["paid"]:
+            group[name] = group.get(name, 0) + 1
+
+    def render(title, groups, emoji):
+        result = []
+        if not groups:
+            return result
+        result.append("")
+        result.append(f"<b>{emoji} {title}:</b>")
+        top = sorted(groups.items(), key=lambda kv: -sum(kv[1].values()))[:5]
+        for source, names in top:
+            result.append(f"• {fmt(source)} — {sum(names.values())}")
+            for name, count in sorted(names.items(), key=lambda kv: -kv[1])[:5]:
+                result.append(f"↳ {fmt(name, 60)} — {plural_times(count)}")
+        return result
+
+    lines = render("Бесплатные уроки по меткам", free_groups, "🎁")
+    lines += render("Попытка оплатить по меткам (поиск по телефону за 90 дней)",
+                    paid_groups, "💳")
+    return lines
+
+
 def fmt(value: str, limit: int = 60) -> str:
     if len(value) > limit:
         value = value[:limit] + "…"
@@ -413,17 +505,22 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
     lines.append(f"📋 <b>Итог по меткам: {len(leads)}</b>")
     lines.extend(build_summary(leads, clean))
 
-    free_products, paid_products = count_products(leads)
-    if free_products:
-        lines.append("")
-        lines.append("<b>🎁 Бесплатные уроки (от большего к меньшему):</b>")
-        for name, count in list(free_products.items())[:15]:
-            lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
-    if paid_products:
-        lines.append("")
-        lines.append("<b>💳 Попытка оплатить (от большего к меньшему):</b>")
-        for name, count in list(paid_products.items())[:10]:
-            lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
+    if clean:
+        # рабочая группа: бесплатные уроки и оплаты — только по меткам,
+        # без метки источник ищется по телефону за 90 дней
+        lines.extend(clean_attribution_sections(cfg, leads, date_to))
+    else:
+        free_products, paid_products = count_products(leads)
+        if free_products:
+            lines.append("")
+            lines.append("<b>🎁 Бесплатные уроки (от большего к меньшему):</b>")
+            for name, count in list(free_products.items())[:15]:
+                lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
+        if paid_products:
+            lines.append("")
+            lines.append("<b>💳 Попытка оплатить (от большего к меньшему):</b>")
+            for name, count in list(paid_products.items())[:10]:
+                lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
     return "\n".join(lines)
 
 
