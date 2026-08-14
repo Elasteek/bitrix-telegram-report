@@ -578,8 +578,8 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             f"{forecast_line}\n"
             f"{plan_block}\n"
             f"{verdict}\n"
-            f"Прогноз на {next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y}: "
-            f"<b>~{next_pred}</b> лидов")
+            f"Прогноз на {next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y} "
+            f"(по тренду, если ничего не менять): <b>~{next_pred}</b> лидов")
 
 
 def build_plan(cfg: dict, week_start: datetime, week_end: datetime, plan: dict = None) -> str:
@@ -596,36 +596,25 @@ def build_plan(cfg: dict, week_start: datetime, week_end: datetime, plan: dict =
 
     lines = [f"📋 <b>Реальный план на неделю "
              f"{next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y}:</b>"]
-    if plan and plan.get("month") == today.strftime("%Y-%m") and int(plan.get("target") or 0):
-        target_month = int(plan["target"])
-        month_start = today.replace(day=1)
-        month_end = (month_start + timedelta(days=32)).replace(day=1)
-        current = count_leads_between(cfg, month_start.strftime(DATE_FORMAT),
-                                      (today + timedelta(days=1)).strftime(DATE_FORMAT))
-        remaining = max(target_month - current, 0)
-        if remaining == 0:
-            lines.append(f"• План месяца ({target_month}) уже выполнен — "
-                         f"держим темп ~{trend}/нед 🎉")
+    if plan and plan.get("month") == today.strftime("%Y-%m") and int(plan.get("daily") or 0):
+        daily = int(plan["daily"])
+        need_weekly = daily * 7
+        lines.append(f"• План {daily}/день — это <b>{need_weekly} лидов/нед</b>")
+        gap = need_weekly / max(actual, 1)
+        if gap >= 2:
+            lines.append(f"• Честно: последняя неделя дала {actual}, тренд ~{trend}/нед — "
+                         f"план требует <b>×{gap:.1f}</b> к текущему темпу. Либо резкое "
+                         f"масштабирование трафика, либо пересмотреть /plan")
+        elif gap >= 1.3:
+            lines.append(f"• Тренд ~{trend}/нед — придётся ускориться в "
+                         f"{gap:.1f} раза, но достижимо")
         else:
-            weeks_left = max((month_end - today).days / 7, 0.5)
-            need_weekly = int(-(-remaining // weeks_left))
-            lines.append(f"• Чтобы выполнить план месяца ({target_month}), нужно "
-                         f"<b>≥ {need_weekly} лидов/нед</b> (~{need_weekly / 7:.0f}/день)")
-            gap = need_weekly / max(actual, 1)
-            if gap >= 2:
-                lines.append(f"• Честно: последняя неделя дала {actual}, тренд ~{trend}/нед — "
-                             f"план требует <b>×{gap:.1f}</b> к текущему темпу. Либо резкое "
-                             f"масштабирование трафика, либо пересмотреть /plan")
-            elif gap >= 1.3:
-                lines.append(f"• Тренд ~{trend}/нед — придётся ускориться в "
-                             f"{gap:.1f} раза, но достижимо")
-            else:
-                lines.append(f"• Тренд ~{trend}/нед — идём в графике ✅")
+            lines.append(f"• Тренд ~{trend}/нед — идём в графике ✅")
     else:
         target = max(round(max(trend, actual) * 1.05), 1)
-        daily = -(-target // 7)
-        lines.append(f"• Цель: <b>≥ {target} лидов</b> (+5% к тренду) — это ~{daily} в день")
-        lines.append("• (Месячный план не задан — задайте /plan 400 в группе руководителя, "
+        daily_goal = -(-target // 7)
+        lines.append(f"• Цель: <b>≥ {target} лидов</b> (+5% к тренду) — это ~{daily_goal} в день")
+        lines.append("• (Дневной план не задан — задайте /plan 100 в группе руководителя, "
                      "и план будет считаться от цели)")
 
     leads = fetch_leads(cfg, week_start.strftime(DATE_FORMAT),
@@ -783,37 +772,35 @@ def count_leads_between(cfg: dict, date_from: str, date_to: str) -> int:
 
 
 def plan_progress_line(cfg: dict, plan: dict):
-    """Строка прогресса месячного плана: «600 из 300 (50%) · отстаём…»."""
+    """Строка прогресса дневного плана: «100/день · сегодня 14/100 · месяц 138 из 1500 (9%) · отстаём»."""
     if not plan or plan.get("month") != datetime.now().strftime("%Y-%m"):
+        return None
+    daily = int(plan.get("daily") or 0)
+    if daily <= 0:
         return None
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     month_start = today.replace(day=1)
-    month_end = (month_start + timedelta(days=32)).replace(day=1)
-    target = int(plan.get("target") or 0)
-    if target <= 0:
-        return None
+    elapsed = max((today - month_start).days + 1, 1)
+    expected = daily * elapsed
     current = count_leads_between(cfg, month_start.strftime(DATE_FORMAT),
                                   (today + timedelta(days=1)).strftime(DATE_FORMAT))
-    days_left = max((month_end - today).days, 1)
-    elapsed = max((today - month_start).days + 1, 1)
-    need_daily = max(-(-(target - current) // days_left), 0)
-    fact_daily = current / elapsed
-    if need_daily == 0:
-        pace = "план уже выполнен 🎉"
-    elif fact_daily >= need_daily * 1.05:
-        pace = f"опережаем 🚀 (нужно {need_daily}/день, идёт {fact_daily:.0f})"
-    elif fact_daily >= need_daily * 0.95:
-        pace = f"в графике ✅ ({need_daily}/день)"
+    today_count = count_leads_between(cfg, today.strftime(DATE_FORMAT),
+                                      (today + timedelta(days=1)).strftime(DATE_FORMAT))
+    ratio = current / expected if expected else 1
+    if ratio >= 1.05:
+        pace = "опережаем 🚀"
+    elif ratio >= 0.95:
+        pace = "в графике ✅"
     else:
-        pace = f"отстаём ❌ — нужно {need_daily}/день, идёт {fact_daily:.0f}"
-    return (f"🎯 План на {MONTHS_RU[month_start.month - 1]}: "
-            f"{current} из {target} ({current * 100 // target}%) · {pace}")
+        pace = f"отстаём ❌ — нужно {daily}/день, идёт {current / elapsed:.0f}"
+    return (f"🎯 План: {daily} лидов/день · сегодня {today_count}/{daily} · "
+            f"месяц {current} из {expected} ({current * 100 // expected}%) · {pace}")
 
 
 def handle_plan_command(cfg: dict, state: dict, spath: Path, text: str) -> str:
-    """/plan — план лидов до конца текущего месяца (задаётся в чате руководителя)."""
+    """/plan — план по лидам В ДЕНЬ (задаётся в чате руководителя)."""
     parts = text.split()
-    target = None
+    daily = None
     if len(parts) > 1:
         arg = parts[1].lower()
         if arg in ("удалить", "off", "сброс"):
@@ -822,20 +809,22 @@ def handle_plan_command(cfg: dict, state: dict, spath: Path, text: str) -> str:
                 return "🗑 План удалён."
             return "Плана и не было."
         if arg.isdigit():
-            target = int(arg)
-    if target is None:
+            daily = int(arg)
+    if daily is None:
         plan = state.get("plan")
-        if not plan or plan.get("month") != datetime.now().strftime("%Y-%m"):
-            return ("🎯 Задание плана: <code>/plan 600</code> — суммарно лидов "
-                    "до конца текущего месяца.\nСейчас план не задан.")
-        line = plan_progress_line(cfg, plan)
-        return (f"Текущий план:\n{line}\n\n"
-                "Изменить: /plan 700 · удалить: /plan удалить")
-    if not 1 <= target <= 1000000:
-        return "⚠️ Дай число от 1 до 1 000 000."
-    state["plan"] = {"month": datetime.now().strftime("%Y-%m"), "target": target}
+        if not plan or plan.get("month") != datetime.now().strftime("%Y-%m") \
+                or not plan.get("daily"):
+            return ("🎯 Задание плана: <code>/plan 100</code> — сколько лидов "
+                    "нужно В ДЕНЬ.\nСейчас план не задан.")
+        return (f"Текущий план:\n{plan_progress_line(cfg, plan)}\n\n"
+                "Изменить: /plan 150 · удалить: /plan удалить")
+    if not 1 <= daily <= 100000:
+        return "⚠️ Дай число от 1 до 100 000."
+    state["plan"] = {"month": datetime.now().strftime("%Y-%m"), "daily": daily}
     save_state(spath, state)
-    return (f"🎯 План принят: <b>{target}</b> лидов до конца месяца.\n\n"
+    month_name = MONTHS_RU[datetime.now().month - 1]
+    return (f"🎯 План принят: <b>{daily} лидов/день</b> "
+            f"(≈ {daily * 31} за {month_name}).\n\n"
             f"{plan_progress_line(cfg, state['plan'])}")
 
 
@@ -1044,8 +1033,8 @@ HELP_TEXT = (
     "за неделю — в понедельник, за месяц — 1-го числа.\n"
     "• Считаются лиды в статусах: Новый, Прогрев, Попытка оплатить курс, "
     "Диалог с куратором, Диагностика, Конвертирован.\n"
-    "🎯 <b>ПЛАН НА МЕСЯЦ</b> (задаётся в группе руководителя):\n"
-    "/plan 600 — цель по лидам до конца месяца · /plan — прогресс · "
+    "🎯 <b>ПЛАН ПО ЛИДАМ</b> (задаётся в группе руководителя):\n"
+    "/plan 100 — сколько лидов нужно В ДЕНЬ · /plan — прогресс · "
     "/plan удалить — сброс. Прогресс виден в шапке каждого отчёта.\n"
     "• Если что-то сломалось — бот сам пришлёт ⚠️ с причиной."
 )
