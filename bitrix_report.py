@@ -214,23 +214,16 @@ def plural_times(n: int) -> str:
 
 
 def build_summary(leads: list, clean: bool = False) -> list:
-    """Финальная выжимка: по каждому источнику — сколько лидов и что брали."""
+    """Итог по меткам: сколько лидов у каждого источника, от большего к меньшему."""
     groups = {}
     for lead in leads:
         source = (lead.get("UTM_SOURCE") or "").strip() or "(без метки)"
-        groups.setdefault(source, []).append(lead)
-    ordered = [(s, g) for s, g in sorted(groups.items(), key=lambda item: -len(item[1]))
+        groups[source] = groups.get(source, 0) + 1
+    ordered = [(s, n) for s, n in sorted(groups.items(), key=lambda item: -item[1])
                if not (clean and s == "(без метки)")]
-    lines = []
-    for source, group in ordered[:5]:
-        lines.append(f"• <b>{len(group)}</b> — {fmt(source)}")
-        products = list(count_products(group).items())
-        for name, count in products[:5]:
-            lines.append(f"  ↳ {fmt(name, 48)} — {plural_times(count)}")
-        if len(products) > 5:
-            lines.append(f"  ↳ …и ещё {len(products) - 5} курса")
-    if len(ordered) > 5:
-        lines.append(f"• …и ещё {len(ordered) - 5} источников")
+    lines = [f"• <b>{count}</b> — {fmt(source)}" for source, count in ordered[:7]]
+    if len(ordered) > 7:
+        lines.append(f"• …и ещё {len(ordered) - 7} источников")
     return lines
 
 
@@ -279,8 +272,17 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
             lines.append(f"• {fmt(names.get(status_id, status_id))}: <b>{count}</b>")
         lines.append("")
 
-    lines.append(f"📋 <b>Итог: {len(leads)}</b>")
+    lines.append(f"📋 <b>Итог по меткам: {len(leads)}</b>")
     lines.extend(build_summary(leads, clean))
+
+    products = list(count_products(leads).items())
+    if products:
+        lines.append("")
+        lines.append("<b>📚 Что брали (от большего к меньшему):</b>")
+        for name, count in products[:15]:
+            lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
+        if len(products) > 15:
+            lines.append(f"• …и ещё {len(products) - 15}")
     return "\n".join(lines)
 
 
