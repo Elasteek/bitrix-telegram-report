@@ -16,6 +16,9 @@ on:
         description: "Отправить, даже если за этот день отчёт уже уходил"
         type: boolean
         default: false
+      poll_seconds:
+        description: "Сколько секунд слушать команды бота (0 — не слушать)"
+        default: "0"
 
 # Не запускать несколько копий одновременно
 concurrency:
@@ -25,7 +28,7 @@ concurrency:
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +50,7 @@ jobs:
           BTR_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           BTR_SEND_HOUR: ${{ inputs.send_hour || '9' }}   # во сколько слать отчёты (по TZ выше)
           BTR_REPORTS: ${{ vars.REPORTS || 'day,week,month' }}  # виды отчётов
+          BTR_POLL_SECONDS: ${{ inputs.poll_seconds || '720' }}  # сколько слушать команды бота
           BTR_STATUSES: ${{ vars.STATUSES }}        # фильтр: какие статусы считать
           BTR_UTM_SOURCES: ${{ vars.UTM_SOURCES }}  # фильтр: только эти источники
           BTR_BREAKDOWN_BY_STATUS: "0"              # блок «По статусам» выключен (1 — вернуть)

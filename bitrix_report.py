@@ -80,13 +80,15 @@ def config_from_env() -> dict:
 
     try:
         send_hour = int(os.environ.get("BTR_SEND_HOUR", "9"))
+        poll_seconds = int(os.environ.get("BTR_POLL_SECONDS") or 0)
     except ValueError:
-        send_hour = 9
+        send_hour, poll_seconds = 9, 0
     return {
         "bitrix_webhook": os.environ["BTR_BITRIX_WEBHOOK"].strip(),
         "telegram_token": os.environ.get("BTR_TELEGRAM_TOKEN", "").strip(),
         "telegram_chat_id": os.environ.get("BTR_TELEGRAM_CHAT_ID", "").strip(),
         "send_hour": send_hour,
+        "poll_seconds": poll_seconds,
         "reports": split("BTR_REPORTS") or ["day", "week", "month"],
         "statuses": split("BTR_STATUSES"),
         "utm_sources": split("BTR_UTM_SOURCES"),
@@ -327,6 +329,175 @@ def notify_error(cfg: dict, error: Exception) -> None:
         pass  # недоступен и Telegram — причина останется в report.log
 
 
+# ----------------------------- команды бота -----------------------------
+
+HELP_TEXT = (
+    "🤖 <b>Команды отчётов по лидам</b>\n"
+    "/day — отчёт за вчера\n"
+    "/day 14.08 — за конкретный день (можно 14.08.2026 или 2026-08-14)\n"
+    "/week — за прошлую неделю (Пн–Вс)\n"
+    "/week 12.08 — неделя, в которую попадает дата\n"
+    "/month — за прошлый месяц\n"
+    "/month 07.2026 — за конкретный месяц\n"
+    "/range 10.08 16.08 — произвольный период (макс 92 дня)\n"
+    "/help — эта справка"
+)
+DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def parse_day(raw: str, today: datetime):
+    """«14.08», «14.08.2026», «2026-08-14», «вчера», «сегодня» -> дата или None."""
+    s = (raw or "").strip().lower()
+    if s in ("вчера", "yesterday"):
+        return today - timedelta(days=1)
+    if s in ("сегодня", "today"):
+        return today
+    for pattern in ("%d.%m.%Y", "%d.%m", "%Y-%m-%d", "%d"):
+        try:
+            d = datetime.strptime(s, pattern)
+        except ValueError:
+            continue
+        if "%Y" not in pattern:
+            d = d.replace(year=today.year)
+        if "%m" not in pattern:
+            d = d.replace(month=today.month)
+        return d
+    return None
+
+
+def month_bounds(month_start: datetime):
+    end = (month_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return month_start, end
+
+
+def process_command(cfg: dict, text: str):
+    """Ответ на команду из чата. None — молча проигнорировать (не команда)."""
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    parts = text.split()
+    cmd = parts[0].lower().split("@")[0]
+    args = parts[1:]
+    periods = completed_periods(datetime.now())
+
+    if cmd in ("/start", "/help"):
+        return HELP_TEXT
+
+    if cmd == "/day":
+        day = parse_day(args[0] if args else "вчера", today)
+        if day is None:
+            return "⚠️ Не понял дату. Примеры: /day 14.08 или /day 14.08.2026"
+        return build_report(cfg, day.strftime(DATE_FORMAT),
+                            (day + timedelta(days=1)).strftime(DATE_FORMAT),
+                            f"за {day:%d.%m.%Y}")
+
+    if cmd == "/week":
+        if args:
+            ref = parse_day(args[0], today)
+            if ref is None:
+                return "⚠️ Не понял дату. Пример: /week 12.08"
+        else:
+            ref = periods["week"]["start"] + timedelta(days=3)  # середина прошлой недели
+        monday = ref - timedelta(days=ref.weekday())
+        return build_report(cfg, monday.strftime(DATE_FORMAT),
+                            (monday + timedelta(days=7)).strftime(DATE_FORMAT),
+                            f"за неделю {monday:%d.%m}–{monday + timedelta(days=6):%d.%m.%Y}")
+
+    if cmd == "/month":
+        if args:
+            month = None
+            for pattern in ("%m.%Y", "%d.%m.%Y", "%d.%m", "%Y-%m-%d"):
+                try:
+                    month = datetime.strptime(args[0], pattern).replace(day=1)
+                    if "%Y" not in pattern:
+                        month = month.replace(year=today.year)
+                    break
+                except ValueError:
+                    continue
+            if month is None:
+                return "⚠️ Не понял месяц. Пример: /month 07.2026"
+        else:
+            month = periods["month"]["start"]
+        start, end = month_bounds(month)
+        return build_report(cfg, start.strftime(DATE_FORMAT), end.strftime(DATE_FORMAT),
+                            f"за {MONTHS_RU[start.month - 1]} {start:%Y}")
+
+    if cmd == "/range":
+        if len(args) < 2:
+            return "⚠️ Нужно две даты. Пример: /range 10.08 16.08"
+        d1, d2 = parse_day(args[0], today), parse_day(args[1], today)
+        if d1 is None or d2 is None:
+            return "⚠️ Не понял даты. Пример: /range 10.08 16.08"
+        if d1 > d2:
+            d1, d2 = d2, d1
+        if (d2 - d1).days > 92:
+            return "⚠️ Период слишком длинный, максимум 92 дня."
+        return build_report(cfg, d1.strftime(DATE_FORMAT),
+                            (d2 + timedelta(days=1)).strftime(DATE_FORMAT),
+                            f"за период {d1:%d.%m}–{d2:%d.%m.%Y}")
+
+    if cmd.startswith("/"):
+        return f"Не знаю команду {cmd}\n\n{HELP_TEXT}"
+    return None
+
+
+def handle_commands(cfg: dict, poll_seconds: int) -> None:
+    """Читает команды из Telegram (getUpdates) и отвечает отчётами.
+
+    poll_seconds > 0 — слушать непрерывно столько секунд (long polling),
+    0 — одна короткая проверка накопившихся команд.
+    Смещение update_id хранится в state.json, поэтому команды не теряются
+    и не обрабатываются дважды между запусками.
+    """
+    spath = state_path_for(cfg)
+    state = load_state(spath)
+    chat_id = str(cfg.get("telegram_chat_id", ""))
+    url = f"{TG_API}/bot{cfg['telegram_token']}/getUpdates"
+    offset = state.get("tg_offset") or 0
+    single_pass = poll_seconds <= 0
+    deadline = time.time() + poll_seconds
+
+    while True:
+        remaining = deadline - time.time()
+        if not single_pass and remaining <= 0:
+            break
+        timeout = 0 if single_pass else min(25, max(1, int(remaining)))
+        try:
+            data = http_post_json(url, {"timeout": timeout, "offset": offset,
+                                        "allowed_updates": ["message"]}, timeout + 15)
+        except Exception as err:
+            log(f"getUpdates: {err}")
+            if single_pass:
+                break
+            time.sleep(5)
+            continue
+        if not data.get("ok"):
+            log(f"getUpdates: {data.get('description', 'ошибка')}")
+            if not single_pass:
+                time.sleep(5)
+            continue
+
+        for update in data.get("result", []):
+            offset = max(offset, update["update_id"] + 1)
+            state["tg_offset"] = offset
+            save_state(spath, state)
+            message = update.get("message") or {}
+            text = (message.get("text") or "").strip()
+            if not text or str(message.get("chat", {}).get("id", "")) != chat_id:
+                continue
+            try:
+                reply = process_command(cfg, text)
+            except Exception as err:
+                reply = f"⚠️ Не удалось собрать отчёт: {html.escape(str(err)[:400])}"
+            if reply is None:
+                continue
+            try:
+                send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"], reply)
+                log(f"команда «{text}» выполнена")
+            except Exception as err:
+                log(f"не удалось ответить на «{text}»: {err}")
+        if single_pass:
+            break
+
+
 def main():
     parser = argparse.ArgumentParser(description="Отчёты по лидам Битрикс24 в Telegram")
     parser.add_argument("--config", default=str(SCRIPT_DIR / "config.json"),
@@ -361,6 +532,10 @@ def main():
 
         only = args.period if args.period in ("day", "week", "month") else None
         run_scheduled(cfg, args.force, only)
+        try:
+            handle_commands(cfg, int(cfg.get("poll_seconds") or 0))
+        except Exception as err:
+            log(f"ОШИБКА (команды бота): {err}")
     except Exception as err:
         log(f"ОШИБКА: {type(err).__name__}: {err}")
         if cfg is not None:
