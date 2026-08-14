@@ -6,6 +6,6 @@
   "send_hour": 9,
   "statuses": ["NEW", "IN_PROCESS", "UC_9HOV0Y", "PROCESSED", "UC_Q91TDC"],
   "utm_sources": ["fb", "ig", "instagramm"],
-  "breakdown_by_status": true,
+  "breakdown_by_status": false,
   "max_catchup_days": 7
 }
