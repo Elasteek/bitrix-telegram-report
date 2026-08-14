@@ -86,7 +86,8 @@ def config_from_env() -> dict:
     return {
         "bitrix_webhook": os.environ["BTR_BITRIX_WEBHOOK"].strip(),
         "telegram_token": os.environ.get("BTR_TELEGRAM_TOKEN", "").strip(),
-        "telegram_chat_id": os.environ.get("BTR_TELEGRAM_CHAT_ID", "").strip(),
+        # список chat_id через запятую — отчёты уходят во все, команды работают в каждом
+        "telegram_chat_id": [c.strip() for c in os.environ.get("BTR_TELEGRAM_CHAT_ID", "").split(",") if c.strip()],
         "send_hour": send_hour,
         "poll_seconds": poll_seconds,
         "reports": split("BTR_REPORTS") or ["day", "week", "month"],
@@ -224,6 +225,28 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str, extra: dic
     return "\n".join(lines)
 
 
+def chat_ids(cfg: dict) -> list:
+    """Список подключённых chat_id (в конфиге может быть строка или список)."""
+    raw = cfg.get("telegram_chat_id") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return [str(c).strip() for c in raw if str(c).strip()]
+
+
+def send_to_all(cfg: dict, text: str, reply_markup: dict = None) -> None:
+    """Отправить сообщение во все подключённые чаты; сбой одного не мешает другим."""
+    chats = chat_ids(cfg)
+    errors = []
+    for chat in chats:
+        try:
+            send_telegram(cfg["telegram_token"], chat, text, reply_markup)
+        except Exception as err:
+            errors.append(f"{chat}: {err}")
+            log(f"не доставлено в чат {chat}: {err}")
+    if errors and len(errors) == len(chats):
+        raise RuntimeError("отчёт не доставлен ни в один чат: " + "; ".join(errors))
+
+
 def send_telegram(token: str, chat_id: str, text: str, reply_markup: dict = None) -> None:
     url = f"{TG_API}/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -322,10 +345,10 @@ def run_scheduled(cfg: dict, force: bool = False, only: str = None) -> None:
         date_from = rep["start"].strftime("%Y-%m-%d %H:%M:%S")
         date_to = rep["end"].strftime("%Y-%m-%d %H:%M:%S")
         text = build_report(cfg, date_from, date_to, rep["title"])
-        send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"], text)
+        send_to_all(cfg, text)
         state.setdefault("sent", {})[rep["kind"]] = rep["key"]
         save_state(spath, state)
-        log(f"отчёт {rep['title']} отправлен в группу {cfg['telegram_chat_id']}")
+        log(f"отчёт {rep['title']} отправлен ({len(chat_ids(cfg))} чат.)")
 
 
 def notify_error(cfg: dict, error: Exception) -> None:
@@ -335,10 +358,10 @@ def notify_error(cfg: dict, error: Exception) -> None:
     if time.time() - (state.get("last_error_ts") or 0) < ERROR_NOTIFY_INTERVAL:
         return
     try:
-        send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"],
-                      "⚠️ <b>Отчёт по лидам не отправлен</b>\n"
-                      f"<code>{html.escape(str(error)[:800])}</code>\n"
-                      "Следующая попытка — в ближайший запуск по расписанию.")
+        send_to_all(cfg,
+                    "⚠️ <b>Отчёт по лидам не отправлен</b>\n"
+                    f"<code>{html.escape(str(error)[:800])}</code>\n"
+                    "Следующая попытка — в ближайший запуск по расписанию.")
         state["last_error_ts"] = time.time()
         save_state(spath, state)
     except Exception:
@@ -454,20 +477,21 @@ def field_menu(date_from: str, date_to: str, title: str) -> dict:
             "from": date_from, "to": date_to, "title": title, "options": options}
 
 
-def send_menu(cfg: dict, state: dict, spath: Path, menu: dict) -> None:
+def send_menu(cfg: dict, state: dict, spath: Path, menu: dict, chat_id: str) -> None:
     """Регистрирует меню в state (живёт между запусками) и отправляет кнопки."""
     menus = state.setdefault("menus", {})
     mid = str(state.get("menu_seq", 0) + 1)
     state["menu_seq"] = int(mid)
+    menu["chat"] = chat_id
     menus[mid] = menu
     while len(menus) > 12:  # держим только свежие меню
         menus.pop(next(iter(menus)))
     save_state(spath, state)
     keyboard = [[{"text": option["btn"], "callback_data": f"rpt:{mid}:{idx}"}]
                 for idx, option in menu["options"].items()]
-    send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"], menu["text"],
+    send_telegram(cfg["telegram_token"], chat_id, menu["text"],
                   reply_markup={"inline_keyboard": keyboard})
-    log(f"меню отправлено: {menu['text']} ({len(keyboard)} кнопок)")
+    log(f"меню отправлено в {chat_id}: {menu['text']} ({len(keyboard)} кнопок)")
 
 
 def parse_day(raw: str, today: datetime):
@@ -628,24 +652,25 @@ def handle_callback(cfg: dict, state: dict, spath: Path, cb: dict) -> None:
         answer_cb("Меню устарело — вызовите команду заново")
         return
 
+    chat = menu.get("chat") or chat_ids(cfg)[0]
     stage = menu.get("stage", "value")
     if stage == "period":
-        send_menu(cfg, state, spath, field_menu(option["from"], option["to"], option["title"]))
+        send_menu(cfg, state, spath, field_menu(option["from"], option["to"], option["title"]), chat)
     elif stage == "field":
         if option["v"] == "all":
             report = build_report(cfg, menu["from"], menu["to"], menu["title"])
-            send_telegram(token, cfg["telegram_chat_id"], report)
+            send_telegram(token, chat, report)
             log(f"кнопка: весь отчёт {menu['title']}")
         else:
             result = build_menu(cfg, option["v"], menu["from"], menu["to"], menu["title"])
             if isinstance(result, str):
-                send_telegram(token, cfg["telegram_chat_id"], result)
+                send_telegram(token, chat, result)
             else:
-                send_menu(cfg, state, spath, result)
+                send_menu(cfg, state, spath, result, chat)
     else:
         report = build_report(cfg, menu["from"], menu["to"], menu["title"],
                               extra={menu["field"]: option["v"]})
-        send_telegram(token, cfg["telegram_chat_id"], report)
+        send_telegram(token, chat, report)
         log(f"кнопка: {menu['field']}={option['v']} → отчёт {menu['title']}")
 
 
@@ -659,7 +684,7 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
     """
     spath = state_path_for(cfg)
     state = load_state(spath)
-    chat_id = str(cfg.get("telegram_chat_id", ""))
+    chats = set(chat_ids(cfg))
     url = f"{TG_API}/bot{cfg['telegram_token']}/getUpdates"
     offset = state.get("tg_offset") or 0
     single_pass = poll_seconds <= 0
@@ -701,7 +726,21 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
 
             message = update.get("message") or {}
             text = (message.get("text") or "").strip()
-            if not text or str(message.get("chat", {}).get("id", "")) != chat_id:
+            chat = str(message.get("chat", {}).get("id", ""))
+            if not text or not chat:
+                continue
+            if chat not in chats:
+                # в неподключённых чатах подсказываем chat_id — так группу легко
+                # добавить в конфиг; данные при этом не отдаём
+                log(f"сообщение из неподключённого чата {chat}: {text[:40]}")
+                if text.startswith("/"):
+                    try:
+                        send_telegram(cfg["telegram_token"], chat,
+                                      "⛔️ Этот чат ещё не подключён к отчётам.\n"
+                                      f"chat_id этого чата: <code>{chat}</code>\n"
+                                      "Передайте его администратору бота.")
+                    except Exception:
+                        pass
                 continue
             try:
                 reply = process_command(cfg, text)
@@ -711,10 +750,10 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
                 continue
             try:
                 if isinstance(reply, dict):  # меню с кнопками
-                    send_menu(cfg, state, spath, reply)
+                    send_menu(cfg, state, spath, reply, chat)
                 else:
-                    send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"], reply)
-                    log(f"команда «{text}» выполнена")
+                    send_telegram(cfg["telegram_token"], chat, reply)
+                    log(f"команда «{text}» выполнена (чат {chat})")
             except Exception as err:
                 log(f"не удалось ответить на «{text}»: {err}")
         if single_pass:
