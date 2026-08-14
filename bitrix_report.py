@@ -966,6 +966,16 @@ def run_scheduled(cfg: dict, force: bool = False, only: str = None) -> None:
             except Exception as err:
                 log(f"прогноз не построен: {err}")
 
+        if rep["kind"] == "day":
+            # сразу после утреннего отчёта — прогноз на сегодня
+            try:
+                forecast = build_daily_forecast_message(cfg, state)
+                send_to_all(cfg, forecast, chats=rchats)
+                save_state(spath, state)
+                log("дневной прогноз отправлен")
+            except Exception as err:
+                log(f"дневной прогноз не построен: {err}")
+
 
 def notify_error(cfg: dict, error: Exception) -> None:
     """Предупреждение в группу, что отчёт не ушёл (с троттлингом, чтобы не спамить)."""
@@ -1269,6 +1279,86 @@ def process_command(cfg: dict, text: str, clean: bool = False, no_utm: bool = Fa
     if cmd.startswith("/"):
         return f"Не знаю команду {cmd}\n\n{HELP_TEXT}"
     return None
+
+
+def daily_lead_counts(cfg: dict, date_to: str, days: int = 28) -> dict:
+    """Счёт лидов по дням за N дней до date_to (для дневного прогноза)."""
+    end = datetime.strptime(date_to, DATE_FORMAT)
+    start = (end - timedelta(days=days)).strftime(DATE_FORMAT)
+    webhook = cfg["bitrix_webhook"]
+    flt = {">=DATE_CREATE": start, "<DATE_CREATE": date_to}
+    if cfg.get("statuses"):
+        flt["STATUS_ID"] = cfg["statuses"]
+    counts, cursor, fetched = {}, 0, 0
+    while True:
+        data = call_bitrix(webhook, "crm.lead.list",
+                           {"filter": flt, "select": ["ID", "DATE_CREATE"], "start": cursor})
+        page = data.get("result", [])
+        for lead in page:
+            try:
+                day = datetime.fromisoformat(lead.get("DATE_CREATE") or "")
+            except ValueError:
+                continue
+            key = day.strftime("%Y-%m-%d")
+            counts[key] = counts.get(key, 0) + 1
+        fetched += len(page)
+        total = int(data.get("total") or 0)
+        if not page or fetched >= total or fetched >= 5000:
+            return counts
+        cursor += len(page)
+
+
+WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг",
+               "пятница", "суббота", "воскресенье"]
+
+
+def build_daily_forecast_message(cfg: dict, state: dict) -> str:
+    """Утренний прогноз на сегодня: средний темп + сезон дня недели,
+    самопроверка вчерашнего прогноза и сверка с дневным планом."""
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    counts = daily_lead_counts(cfg, today.strftime(DATE_FORMAT))
+    ordered = sorted(counts.items())
+    last14 = [c for _, c in ordered[-14:]]
+    avg14 = sum(last14) / len(last14) if last14 else 0
+    same_dow = [c for day, c in ordered[-28:]
+                if datetime.strptime(day, "%Y-%m-%d").weekday() == today.weekday()]
+    dow_avg = sum(same_dow) / len(same_dow) if same_dow else avg14
+    pred = max(round(0.5 * avg14 + 0.5 * dow_avg), 0)
+
+    ykey = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    y_actual = counts.get(ykey, 0)
+    forecasts = state.setdefault("daily_forecasts", {})
+    stored = forecasts.get(ykey)
+    if stored:
+        diff = (y_actual - stored) / stored * 100
+        check = f"Вчера: {y_actual} (прогноз был {stored} → {diff:+.0f}% " \
+                f"{'✅' if diff >= -10 else '❌'})"
+    else:
+        check = f"Вчера: {y_actual} (прогноза не было — теперь веду)"
+
+    forecasts[today.strftime("%Y-%m-%d")] = pred
+    while len(forecasts) > 7:
+        forecasts.pop(next(iter(forecasts)))
+
+    plan = state.get("plan") or {}
+    daily_goal = int(plan.get("daily") or 0) if \
+        plan.get("month") == today.strftime("%Y-%m") else 0
+    if daily_goal:
+        if pred >= daily_goal:
+            plan_line = f"🎯 План {daily_goal}/день — прогноз его закрывает ✅"
+        else:
+            mult = daily_goal / max(pred, 1)
+            plan_line = (f"🎯 План {daily_goal}/день — не хватает {daily_goal - pred} "
+                         f"(темп надо поднять в {mult:.1f} раза) ❌")
+    else:
+        plan_line = "🎯 Дневной план не задан: /plan 100 в группе руководителя"
+
+    return (f"☀️ <b>Прогноз на сегодня, {WEEKDAYS_RU[today.weekday()]} "
+            f"{today:%d.%m}</b>\n"
+            f"{check}\n"
+            f"Темп: ~{avg14:.0f}/день (2 недели), по {WEEKDAYS_RU[today.weekday()]}м ~{dow_avg:.0f}\n\n"
+            f"Прогноз на сегодня: <b>~{pred} лидов</b>\n"
+            f"{plan_line}")
 
 
 def forecast_and_plan_message(cfg: dict, state: dict) -> str:
