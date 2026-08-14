@@ -530,14 +530,13 @@ def forecast_next(series: list) -> int:
 
 def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
                            week_end: datetime) -> str:
-    """Прогнозное сообщение к недельному отчёту: факт прошлой недели vs прошлый
-    прогноз, вердикт по росту и прогноз на следующую неделю (запоминается)."""
+    """Недельное сообщение в человеческом порядке: Цель → Реальность (вчера +
+    неделя + динамика + самопроверка) → Прогноз. Следующий прогноз запоминается."""
     counts = weekly_lead_counts(cfg, week_end.strftime(DATE_FORMAT))
     ordered = sorted(counts.items())
     key = week_start.strftime("%Y-%m-%d")
     actual = counts.get(key, 0)
-    prev_key = (week_start - timedelta(days=7)).strftime("%Y-%m-%d")
-    prev = counts.get(prev_key, 0)
+    prev = counts.get((week_start - timedelta(days=7)).strftime("%Y-%m-%d"), 0)
     history = [c for _, c in ordered]
 
     if prev > 0:
@@ -557,10 +556,9 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
     if stored:
         diff = (actual - stored) / stored * 100 if stored else 0
         mark = "✅" if diff >= 0 else "❌"
-        forecast_line = f"Мой прогноз был <b>{stored}</b> → факт <b>{actual}</b> ({diff:+.0f}%) {mark}"
+        check = f"был <b>{stored}</b> → факт <b>{actual}</b> ({diff:+.0f}%) {mark}"
     else:
-        forecast_line = "Прогноза на эту неделю не было (первый выпуск) — теперь буду вести"
-    plan_line = plan_progress_line(cfg, state.get("plan")) if state.get("plan") else None
+        check = "не было (первый выпуск — теперь веду)"
 
     next_pred = forecast_next(history)
     next_monday = week_start + timedelta(days=7)
@@ -569,16 +567,39 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
     while len(forecasts) > 4:
         forecasts.pop(next(iter(forecasts)))
 
+    # цель и факты по ней
+    plan = state.get("plan") or {}
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    daily_goal = int(plan.get("daily") or 0) \
+        if plan.get("month") == today.strftime("%Y-%m") else 0
+    goal_line = f"🎯 <b>Цель: {daily_goal} лидов в день</b>\n\n" if daily_goal else ""
+    yesterday = today - timedelta(days=1)
+    y_count = count_leads_between(cfg, yesterday.strftime(DATE_FORMAT),
+                                  today.strftime(DATE_FORMAT))
+    y_line = f"• Вчера ({yesterday:%d.%m}): <b>{y_count}</b>"
+    if daily_goal:
+        y_line += f" из {daily_goal}"
+    month_lines = []
+    if daily_goal:
+        month_start = today.replace(day=1)
+        elapsed = max((today - month_start).days + 1, 1)
+        current = count_leads_between(cfg, month_start.strftime(DATE_FORMAT),
+                                      (today + timedelta(days=1)).strftime(DATE_FORMAT))
+        month_lines.append(f"• {MONTHS_RU[month_start.month - 1]}: {current} из "
+                           f"{daily_goal * elapsed} ({current * 100 // (daily_goal * elapsed)}%) "
+                           f"— идёт {current / elapsed:.0f}/день")
+
     trend = " → ".join(str(c) for c in history[-6:])
-    plan_block = f"{plan_line}\n" if plan_line else ""
-    return (f"📈 <b>Прогноз по лидам</b>\n"
-            f"Неделя {week_start:%d.%m}–{week_end - timedelta(days=1):%d.%m.%Y}: "
-            f"<b>{actual}</b> лидов\n"
-            f"Динамика по неделям: {fmt(trend)}\n"
-            f"{forecast_line}\n"
-            f"{plan_block}\n"
-            f"{verdict}\n"
-            f"Прогноз на {next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y} "
+    return (f"{goal_line}"
+            f"📉 <b>Реальность:</b>\n"
+            f"{y_line}\n"
+            f"• Неделя {week_start:%d.%m}–{week_end - timedelta(days=1):%d.%m.%Y}: "
+            f"<b>{actual}</b> лидов (~{actual / 7:.0f}/день)\n"
+            f"• Динамика по неделям: {fmt(trend)}\n"
+            f"• Мой прогноз на неделю: {check}\n"
+            + ("\n".join(month_lines) + "\n" if month_lines else "") +
+            f"\n{verdict}\n"
+            f"🔮 Прогноз на {next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y} "
             f"(по тренду, если ничего не менять): <b>~{next_pred}</b> лидов")
 
 
@@ -594,8 +615,7 @@ def build_plan(cfg: dict, week_start: datetime, week_end: datetime, plan: dict =
     next_monday = week_start + timedelta(days=7)
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
-    lines = [f"📋 <b>Реальный план на неделю "
-             f"{next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y}:</b>"]
+    lines = ["🧭 <b>Задачи и фокус:</b>"]
     if plan and plan.get("month") == today.strftime("%Y-%m") and int(plan.get("daily") or 0):
         daily = int(plan["daily"])
         need_weekly = daily * 7
@@ -772,7 +792,7 @@ def count_leads_between(cfg: dict, date_from: str, date_to: str) -> int:
 
 
 def plan_progress_line(cfg: dict, plan: dict):
-    """Строка прогресса дневного плана: «100/день · сегодня 14/100 · месяц 138 из 1500 (9%) · отстаём»."""
+    """Строка прогресса дневного плана: сравнение со ВЧЕРА, не с сегодняшним."""
     if not plan or plan.get("month") != datetime.now().strftime("%Y-%m"):
         return None
     daily = int(plan.get("daily") or 0)
@@ -784,8 +804,9 @@ def plan_progress_line(cfg: dict, plan: dict):
     expected = daily * elapsed
     current = count_leads_between(cfg, month_start.strftime(DATE_FORMAT),
                                   (today + timedelta(days=1)).strftime(DATE_FORMAT))
-    today_count = count_leads_between(cfg, today.strftime(DATE_FORMAT),
-                                      (today + timedelta(days=1)).strftime(DATE_FORMAT))
+    yesterday = today - timedelta(days=1)
+    y_count = count_leads_between(cfg, yesterday.strftime(DATE_FORMAT),
+                                  today.strftime(DATE_FORMAT))
     ratio = current / expected if expected else 1
     if ratio >= 1.05:
         pace = "опережаем 🚀"
@@ -793,8 +814,9 @@ def plan_progress_line(cfg: dict, plan: dict):
         pace = "в графике ✅"
     else:
         pace = f"отстаём ❌ — нужно {daily}/день, идёт {current / elapsed:.0f}"
-    return (f"🎯 План: {daily} лидов/день · сегодня {today_count}/{daily} · "
-            f"месяц {current} из {expected} ({current * 100 // expected}%) · {pace}")
+    return (f"🎯 План: {daily}/день · вчера {y_count}/{daily} · "
+            f"{MONTHS_RU[month_start.month - 1]} {current} из {expected} "
+            f"({current * 100 // expected}%) · {pace}")
 
 
 def handle_plan_command(cfg: dict, state: dict, spath: Path, text: str) -> str:
