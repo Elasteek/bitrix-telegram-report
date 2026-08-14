@@ -31,6 +31,7 @@ import argparse
 import html
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -148,7 +149,7 @@ def fetch_leads(cfg: dict, date_from: str, date_to: str, extra: dict = None) -> 
     if extra:
         flt.update(extra)
     fields = ["ID", "STATUS_ID", "UTM_SOURCE", "UTM_MEDIUM", "UTM_CAMPAIGN",
-              "UTM_CONTENT", "UTM_TERM"]
+              "UTM_CONTENT", "UTM_TERM", "UF_CRM_PRODUCT"]
     leads, start = [], 0
     while True:
         data = call_bitrix(webhook, "crm.lead.list",
@@ -178,6 +179,26 @@ def count_by(leads: list, field: str) -> dict:
     for lead in leads:
         value = (lead.get(field) or "").strip() or "(без метки)"
         counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: -item[1]))
+
+
+def count_products(leads: list) -> dict:
+    """Сколько раз брали каждый урок/курс (UF_CRM_PRODUCT). У одного лида
+    может быть несколько продуктов; хвосты вида «- 1x0 = 0» отрезаем."""
+    counts = {}
+    for lead in leads:
+        raw = lead.get("UF_CRM_PRODUCT") or []
+        items = raw if isinstance(raw, list) else [raw]
+        names = set()
+        for item in items:
+            for part in str(item).split(";"):
+                name = re.sub(r"\s*=\s*\d+\s*$", "", part.strip())       # « = 0»
+                name = re.sub(r"\s*-\s*\d+x\d+\s*$", "", name)           # « - 1x0»
+                name = re.sub(r"\s+", " ", name).strip()
+                if name:
+                    names.add(name)
+        for name in names:
+            counts[name] = counts.get(name, 0) + 1
     return dict(sorted(counts.items(), key=lambda item: -item[1]))
 
 
@@ -214,6 +235,13 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str, extra: dic
         lines.append(f"<b>{section_title}:</b>")
         for value, count in counts.items():
             lines.append(f"• {fmt(value)}: <b>{count}</b>")
+        lines.append("")
+
+    products = count_products(leads)
+    if products:
+        lines.append("<b>📚 Уроки/курсы (что брали):</b>")
+        for name, count in list(products.items())[:20]:
+            lines.append(f"• {fmt(name)}: <b>{count}</b>")
         lines.append("")
 
     if cfg.get("statuses") and cfg.get("breakdown_by_status", True):
@@ -416,8 +444,9 @@ HELP_TEXT = (
     "<code>/range 10.08 16.08 utm campaign</code>\n"
     "\n"
     "📚 <b>ПОЛЯ</b>: source — источник · medium — канал · campaign — кампания · "
-    "content — объявление · term — ключ. В каждом отчёте все 5 разделов по "
-    "фактическим значениям; пустые разделы скрываются.\n"
+    "content — объявление · term — ключ. В каждом отчёте все UTM-разделы по "
+    "фактическим значениям (пустые скрываются) и список уроков/курсов, "
+    "которые брали лиды.\n"
     "\n"
     "ℹ️ <b>ПОЛЕЗНОЕ</b>\n"
     "• Даты — как удобно: 14.08, 14.08.2026, 2026-08-14, «вчера», «сегодня».\n"
