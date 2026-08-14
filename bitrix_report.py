@@ -530,7 +530,8 @@ def main():
             if args.period == "today":
                 start, end, title = today, today + timedelta(days=1), f"за {today:%d.%m.%Y} (сегодня)"
             else:
-                period = completed_periods(now)[args.period or "day"]
+                key = {"yesterday": "day"}.get(args.period, args.period) or "day"
+                period = completed_periods(now)[key]
                 start, end, title = period["start"], period["end"], period["title"]
             print(build_report(cfg, start.strftime("%Y-%m-%d %H:%M:%S"),
                                end.strftime("%Y-%m-%d %H:%M:%S"), title))
