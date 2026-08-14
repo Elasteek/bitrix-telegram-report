@@ -395,7 +395,7 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
             lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
     if paid_products:
         lines.append("")
-        lines.append("<b>💰 Платные (от большего к меньшему):</b>")
+        lines.append("<b>💳 Попытка оплатить (от большего к меньшему):</b>")
         for name, count in list(paid_products.items())[:10]:
             lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
     return "\n".join(lines)
@@ -617,7 +617,7 @@ HELP_TEXT = (
     "• Утренние автоотчёты (в группах, где они включены): за день — в 9:00, "
     "за неделю — в понедельник, за месяц — 1-го числа.\n"
     "• Считаются лиды в статусах: Новый, Прогрев, Попытка оплатить курс, "
-    "Диалог с куратором, Диагностика.\n"
+    "Диалог с куратором, Диагностика, Конвертирован.\n"
     "• Если что-то сломалось — бот сам пришлёт ⚠️ с причиной."
 )
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
