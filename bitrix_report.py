@@ -481,6 +481,102 @@ def clean_attribution_sections(cfg: dict, leads: list, date_to: str) -> list:
     return lines
 
 
+def weekly_lead_counts(cfg: dict, date_to: str, weeks: int = 8) -> dict:
+    """Счёт лидов по календарным неделям (Пн–Вс) за N недель до date_to."""
+    end = datetime.strptime(date_to, DATE_FORMAT)
+    start = (end - timedelta(days=7 * weeks)).strftime(DATE_FORMAT)
+    webhook = cfg["bitrix_webhook"]
+    flt = {">=DATE_CREATE": start, "<DATE_CREATE": date_to}
+    if cfg.get("statuses"):
+        flt["STATUS_ID"] = cfg["statuses"]
+    counts, cursor, fetched = {}, 0, 0
+    while True:
+        data = call_bitrix(webhook, "crm.lead.list",
+                           {"filter": flt, "select": ["ID", "DATE_CREATE"], "start": cursor})
+        page = data.get("result", [])
+        for lead in page:
+            try:
+                created = datetime.fromisoformat(lead.get("DATE_CREATE") or "")
+            except ValueError:
+                continue
+            monday = (created.replace(hour=0, minute=0, second=0, microsecond=0)
+                      - timedelta(days=created.weekday()))
+            key = monday.strftime("%Y-%m-%d")
+            counts[key] = counts.get(key, 0) + 1
+        fetched += len(page)
+        total = int(data.get("total") or 0)
+        if not page or fetched >= total or fetched >= 5000:
+            return counts
+        cursor += len(page)
+
+
+def forecast_next(series: list) -> int:
+    """Прогноз следующего значения: линейный тренд, при малом числе точек — среднее."""
+    ys = series[-6:]
+    if not ys:
+        return 0
+    if len(ys) < 3:
+        return max(round(sum(ys) / len(ys)), 1)
+    n = len(ys)
+    xs = list(range(n))
+    mx, my = sum(xs) / n, sum(ys) / n
+    denom = sum((x - mx) ** 2 for x in xs)
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
+    intercept = my - slope * mx
+    return max(round(intercept + slope * n), 1)
+
+
+def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
+                           week_end: datetime) -> str:
+    """Прогнозное сообщение к недельному отчёту: факт прошлой недели vs прошлый
+    прогноз, вердикт по росту и прогноз на следующую неделю (запоминается)."""
+    counts = weekly_lead_counts(cfg, week_end.strftime(DATE_FORMAT))
+    ordered = sorted(counts.items())
+    key = week_start.strftime("%Y-%m-%d")
+    actual = counts.get(key, 0)
+    prev_key = (week_start - timedelta(days=7)).strftime("%Y-%m-%d")
+    prev = counts.get(prev_key, 0)
+    history = [c for _, c in ordered]
+
+    if prev > 0:
+        change = (actual - prev) / prev * 100
+    else:
+        change = 100.0 if actual else 0.0
+    if change <= -5:
+        verdict = f"⚠️ ЛИДЫ ПАДАЮТ ({change:+.0f}%) — неделя плохая, надо срочно менять картину 😰"
+    elif change < 5:
+        verdict = f"😐 Стоим на месте ({change:+.0f}%) — роста нет, пора поднажать"
+    elif change < 25:
+        verdict = f"🙂 Растём (+{change:.0f}%) — так держать!"
+    else:
+        verdict = f"🚀 Быстрый рост (+{change:.0f}%) — отличный результат!"
+
+    stored = (state.get("forecasts") or {}).get(key)
+    if stored:
+        diff = (actual - stored) / stored * 100 if stored else 0
+        mark = "✅" if diff >= 0 else "❌"
+        forecast_line = f"Мой прогноз был <b>{stored}</b> → факт <b>{actual}</b> ({diff:+.0f}%) {mark}"
+    else:
+        forecast_line = "Прогноза на эту неделю не было (первый выпуск) — теперь буду вести"
+
+    next_pred = forecast_next(history)
+    next_monday = week_start + timedelta(days=7)
+    forecasts = state.setdefault("forecasts", {})
+    forecasts[next_monday.strftime("%Y-%m-%d")] = next_pred
+    while len(forecasts) > 4:
+        forecasts.pop(next(iter(forecasts)))
+
+    trend = " → ".join(str(c) for c in history[-6:])
+    return (f"📈 <b>Прогноз по лидам</b>\n"
+            f"Неделя {week_start:%d.%m}–{week_end - timedelta(days=1):%d.%m.%Y}: "
+            f"<b>{actual}</b> лидов\n"
+            f"Динамика по неделям: {fmt(trend)}\n"
+            f"{forecast_line}\n\n"
+            f"{verdict}\n"
+            f"Прогноз на {next_monday:%d.%m}–{next_monday + timedelta(days=6):%d.%m.%Y}: "
+            f"<b>~{next_pred}</b> лидов")
+
+
 def fmt(value: str, limit: int = 60) -> str:
     if len(value) > limit:
         value = value[:limit] + "…"
@@ -719,6 +815,16 @@ def run_scheduled(cfg: dict, force: bool = False, only: str = None) -> None:
         save_state(spath, state)
         log(f"отчёт {rep['title']} отправлен в {len(rchats)} чат. "
             f"({len(variants)} варианта)")
+
+        if rep["kind"] == "week":
+            # вторым сообщением к недельному отчёту — прогноз по лидам
+            try:
+                forecast = build_forecast_message(cfg, state, rep["start"], rep["end"])
+                send_to_all(cfg, forecast, chats=rchats)
+                save_state(spath, state)
+                log("прогноз по лидам отправлен")
+            except Exception as err:
+                log(f"прогноз не построен: {err}")
 
 
 def notify_error(cfg: dict, error: Exception) -> None:
