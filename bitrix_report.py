@@ -808,6 +808,7 @@ def period_menu() -> dict:
     periods = completed_periods(now)
     this_monday = today - timedelta(days=today.weekday())
     month_start = today.replace(day=1)
+    d90_start = today - timedelta(days=89)
     items = [
         ("вчера", periods["day"]),
         ("сегодня", {"start": today, "end": today + timedelta(days=1),
@@ -820,6 +821,9 @@ def period_menu() -> dict:
           "title": f"за {MONTHS_RU[month_start.month - 1]} {month_start:%Y} (по сегодня)"}),
         ("прошлая неделя (Пн–Вс)", periods["week"]),
         ("прошлый месяц", periods["month"]),
+        ("последние 90 дней",
+         {"start": d90_start, "end": today + timedelta(days=1),
+          "title": f"за 90 дней ({d90_start:%d.%m}–{today:%d.%m.%Y})"}),
     ]
     options = {str(i): {"btn": label, "from": p["start"].strftime(DATE_FORMAT),
                         "to": p["end"].strftime(DATE_FORMAT), "title": p["title"]}
@@ -917,10 +921,14 @@ def process_command(cfg: dict, text: str, clean: bool = False):
     slash_field = SLASH_FIELD_COMMANDS.get(cmd.lstrip("/"))
     if slash_field:
         arg = args[0].lower() if args else ""
+        today90 = today - timedelta(days=89)
         if arg in ("week", "неделя"):
             period = periods["week"]
         elif arg in ("month", "месяц"):
             period = periods["month"]
+        elif arg in ("90", "90дней", "90 дней"):
+            period = {"start": today90, "end": today + timedelta(days=1),
+                      "title": f"за 90 дней ({today90:%d.%m}–{today:%d.%m.%Y})"}
         elif args:
             day = parse_day(args[0], today)
             if day is None:
