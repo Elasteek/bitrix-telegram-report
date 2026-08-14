@@ -45,7 +45,8 @@ jobs:
           BTR_BITRIX_WEBHOOK: ${{ secrets.BITRIX_WEBHOOK }}
           BTR_TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           BTR_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          BTR_SEND_HOUR: ${{ inputs.send_hour || '9' }}   # во сколько слать отчёт (по TZ выше)
+          BTR_SEND_HOUR: ${{ inputs.send_hour || '9' }}   # во сколько слать отчёты (по TZ выше)
+          BTR_REPORTS: ${{ vars.REPORTS || 'day,week,month' }}  # виды отчётов
           BTR_STATUSES: ${{ vars.STATUSES }}        # фильтр: какие статусы считать
           BTR_UTM_SOURCES: ${{ vars.UTM_SOURCES }}  # фильтр: только эти источники
           BTR_BREAKDOWN_BY_STATUS: "0"              # блок «По статусам» выключен (1 — вернуть)

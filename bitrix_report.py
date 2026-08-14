@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Ежедневный отчёт по лидам Битрикс24 -> Telegram.
+"""Отчёты по лидам Битрикс24 -> Telegram.
+
+Три вида отчётов (config `reports`, по умолчанию все):
+  day   — за вчера, отправляется ежедневно в send_hour;
+  week  — за прошлую календарную неделю (Пн–Вс), отправляется в понедельник;
+  month — за прошлый календарный месяц, отправляется 1-го числа.
 
 Как работает автоматика: планировщик (launchd / cron / GitHub Actions) запускает
-скрипт каждые 15 минут, а скрипт сам решает, пора ли отправлять отчёт —
-в state.json он помнит, за какую дату отчёт уже ушёл. Поэтому:
+скрипт каждые 15 минут, а скрипт сам решает, пора ли отправлять — в state.json
+он помнит, какие отчёты уже уходили. Поэтому:
 
   * повторные запуски ничего не дублируют (можно дёргать часто);
   * если в час отправки не было интернета — отчёт уйдёт со следующим запуском;
-  * после простоя (ноутбук выключали, GitHub лежал) отправляются все
-    пропущенные дни, до max_catchup_days за раз;
-  * если что-то сломалось (Битрикс недоступен, неверный конфиг) — в группу
-    приходит предупреждение об ошибке (не чаще раза в 2 часа), а детали
-    пишутся в report.log рядом со скриптом.
+  * после простоя daily-отчёты досылаются за пропущенные дни (до max_catchup_days);
+  * если что-то сломалось — в группу приходит предупреждение (не чаще раза
+    в 2 часа), а детали пишутся в report.log рядом со скриптом.
 
 Флаги:
   --dry-run                  показать отчёт в консоли, ничего не отправлять
-  --period yesterday|today   за какой день (по умолчанию — из конфига)
+  --period day|week|month    период для --dry-run; с --force — какой отчёт
+                             отправить принудительно (по умолчанию все)
   --force                    отправить прямо сейчас, даже если уже отправлено
   --config PATH              путь к конфигу (по умолчанию config.json рядом со скриптом)
 
@@ -39,6 +43,8 @@ BITRIX_TIMEOUT = 30
 TG_TIMEOUT = 30
 TG_API = os.environ.get("BTR_TG_API", "https://api.telegram.org")
 ERROR_NOTIFY_INTERVAL = 2 * 3600  # предупреждение об ошибке не чаще, чем раз в 2 часа
+MONTHS_RU = ["январь", "февраль", "март", "апрель", "май", "июнь",
+             "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
 
 
 def log(message: str) -> None:
@@ -80,8 +86,8 @@ def config_from_env() -> dict:
         "bitrix_webhook": os.environ["BTR_BITRIX_WEBHOOK"].strip(),
         "telegram_token": os.environ.get("BTR_TELEGRAM_TOKEN", "").strip(),
         "telegram_chat_id": os.environ.get("BTR_TELEGRAM_CHAT_ID", "").strip(),
-        "period": os.environ.get("BTR_PERIOD", "yesterday"),
         "send_hour": send_hour,
+        "reports": split("BTR_REPORTS") or ["day", "week", "month"],
         "statuses": split("BTR_STATUSES"),
         "utm_sources": split("BTR_UTM_SOURCES"),
         "breakdown_by_status": os.environ.get("BTR_BREAKDOWN_BY_STATUS", "1").lower() not in ("0", "false"),
@@ -144,6 +150,17 @@ def fetch_leads(cfg: dict, date_from: str, date_to: str) -> list:
         start += len(page)
 
 
+def status_names(webhook: str) -> dict:
+    """ID статусов лида -> названия, чтобы отчёт был читаемым."""
+    data = call_bitrix(webhook, "crm.status.list", {"filter": {"ENTITY_ID": "STATUS"}})
+    names = {}
+    for item in data.get("result", []):
+        key = item.get("STATUS_ID") or item.get("ID")
+        if key:
+            names[key] = item.get("NAME", key)
+    return names
+
+
 def count_by(leads: list, field: str) -> dict:
     """Сколько лидов приходится на каждое значение поля, по убыванию."""
     counts = {}
@@ -159,26 +176,11 @@ def fmt(value: str, limit: int = 60) -> str:
     return html.escape(value)
 
 
-def status_names(webhook: str) -> dict:
-    """ID статусов лида -> названия, чтобы отчёт был читаемым."""
-    data = call_bitrix(webhook, "crm.status.list", {"filter": {"ENTITY_ID": "STATUS"}})
-    names = {}
-    for item in data.get("result", []):
-        key = item.get("STATUS_ID") or item.get("ID")
-        if key:
-            names[key] = item.get("NAME", key)
-    return names
-
-
-def build_report(cfg: dict, day: datetime) -> str:
-    statuses = cfg.get("statuses") or []
+def build_report(cfg: dict, date_from: str, date_to: str, title: str) -> str:
     utm_sources = cfg.get("utm_sources") or []
-    # API Битрикс24 понимает даты фильтра в часовом поясе портала
-    date_from = day.strftime("%Y-%m-%d %H:%M:%S")
-    date_to = (day + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
     leads = fetch_leads(cfg, date_from, date_to)
 
-    lines = [f"📊 <b>Отчёт по лидам за {day:%d.%m.%Y}</b>"]
+    lines = [f"📊 <b>Отчёт по лидам {title}</b>"]
     if utm_sources:
         lines.append(f"источники: {fmt(', '.join(utm_sources))}")
     lines.append("")
@@ -187,22 +189,22 @@ def build_report(cfg: dict, day: datetime) -> str:
         lines.append("Лидов по заданным статусам и источникам не было.")
         return "\n".join(lines)
 
-    for title, field in (("По источникам (utm_source)", "UTM_SOURCE"),
-                         ("По каналам (utm_medium)", "UTM_MEDIUM"),
-                         ("По кампаниям (utm_campaign)", "UTM_CAMPAIGN")):
-        lines.append(f"<b>{title}:</b>")
+    for section_title, field in (("По источникам (utm_source)", "UTM_SOURCE"),
+                                 ("По каналам (utm_medium)", "UTM_MEDIUM"),
+                                 ("По кампаниям (utm_campaign)", "UTM_CAMPAIGN")):
+        lines.append(f"<b>{section_title}:</b>")
         for value, count in count_by(leads, field).items():
             lines.append(f"• {fmt(value)}: <b>{count}</b>")
         lines.append("")
 
-    if statuses and cfg.get("breakdown_by_status", True):
+    if cfg.get("statuses") and cfg.get("breakdown_by_status", True):
         names = status_names(cfg["bitrix_webhook"])
         lines.append("<b>По статусам:</b>")
         for status_id, count in count_by(leads, "STATUS_ID").items():
             lines.append(f"• {fmt(names.get(status_id, status_id))}: <b>{count}</b>")
         lines.append("")
 
-    lines.append(f"Итого за день: <b>{len(leads)}</b>")
+    lines.append(f"Итого: <b>{len(leads)}</b>")
     return "\n".join(lines)
 
 
@@ -233,51 +235,79 @@ def state_path_for(cfg: dict) -> Path:
     return Path(cfg.get("state_file") or (SCRIPT_DIR / "state.json"))
 
 
-def pending_days(cfg: dict, state: dict, force: bool, period: str):
-    """Дни, по которым отчёт ещё не отправлялся (для period=yesterday — с догоном)."""
-    now = datetime.now()
+def completed_periods(now: datetime) -> dict:
+    """Завершённые периоды, по которым можно отчитаться: вчера, прошлая неделя, прошлый месяц."""
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    yesterday = today - timedelta(days=1)
-    send_hour = int(cfg.get("send_hour", 9))
-
-    if period == "today":
-        already_sent = state.get("last_report_date") == today.strftime("%Y-%m-%d")
-        if already_sent or (not force and now.hour < send_hour):
-            return []
-        return [today]
-
-    try:
-        last_sent = datetime.strptime(state.get("last_report_date") or "", "%Y-%m-%d")
-    except ValueError:
-        last_sent = yesterday - timedelta(days=1)  # самый первый запуск — только вчера
-    if force:
-        last_sent = yesterday - timedelta(days=1)
-
-    days = []
-    day = last_sent + timedelta(days=1)
-    while day <= yesterday:
-        days.append(day)
-        day += timedelta(days=1)
-    max_catchup = int(cfg.get("max_catchup_days", 7))
-    if max_catchup > 0:
-        days = days[-max_catchup:]
-    if days and not force and now.hour < send_hour:
-        return []  # ещё не наступило время отправки — тихо выходим
-    return days
+    day_start = today - timedelta(days=1)
+    week_start = today - timedelta(days=today.weekday() + 7)  # понедельник прошлой недели
+    month_start = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+    return {
+        "day": {"start": day_start, "end": today,
+                "title": f"за {day_start:%d.%m.%Y}", "key": day_start.strftime("%Y-%m-%d")},
+        "week": {"start": week_start, "end": week_start + timedelta(days=7),
+                 "title": f"за неделю {week_start:%d.%m}–{week_start + timedelta(days=6):%d.%m.%Y}",
+                 "key": week_start.strftime("%Y-%m-%d")},
+        "month": {"start": month_start, "end": today.replace(day=1),
+                  "title": f"за {MONTHS_RU[month_start.month - 1]} {month_start:%Y}",
+                  "key": month_start.strftime("%Y-%m")},
+    }
 
 
-def run_scheduled(cfg: dict, force: bool, period: str) -> None:
+def pending_reports(cfg: dict, state: dict, force: bool, only: str = None) -> list:
+    """Отчёты, которые пора отправить: [{kind, start, end, title, key}, ...]."""
+    now = datetime.now()
+    periods = completed_periods(now)
+    enabled = cfg.get("reports") or ["day", "week", "month"]
+    on_time = force or now.hour >= int(cfg.get("send_hour", 9))
+    sent = state.get("sent") or {}
+    if not sent.get("day") and state.get("last_report_date"):
+        sent["day"] = state["last_report_date"]  # state.json старого формата
+
+    out = []
+    for kind in ("day", "week", "month"):
+        if kind not in enabled or (only and kind != only):
+            continue
+        period = periods[kind]
+
+        if kind == "day":
+            # с догоном пропущенных дней: от последнего отправленного до вчера
+            try:
+                last_sent = datetime.strptime(sent.get("day") or "", "%Y-%m-%d")
+            except ValueError:
+                last_sent = period["start"] - timedelta(days=1)
+            if force:
+                last_sent = period["start"] - timedelta(days=1)
+            days, day = [], last_sent + timedelta(days=1)
+            while day <= period["start"]:
+                days.append(day)
+                day += timedelta(days=1)
+            max_catchup = int(cfg.get("max_catchup_days", 7))
+            if max_catchup > 0:
+                days = days[-max_catchup:]
+            if days and on_time:
+                for d in days:
+                    out.append({"kind": "day", "start": d, "end": d + timedelta(days=1),
+                                "title": f"за {d:%d.%m.%Y}", "key": d.strftime("%Y-%m-%d")})
+        elif sent.get(kind) != period["key"] and on_time:
+            out.append({"kind": kind, "start": period["start"], "end": period["end"],
+                        "title": period["title"], "key": period["key"]})
+    return out
+
+
+def run_scheduled(cfg: dict, force: bool = False, only: str = None) -> None:
     spath = state_path_for(cfg)
     state = load_state(spath)
-    days = pending_days(cfg, state, force, period)
-    if not days:
-        return  # не время либо отчёт уже ушёл — запуск-проверка ничего не делает
-    for day in days:
-        report = build_report(cfg, day)
-        send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"], report)
-        state["last_report_date"] = day.strftime("%Y-%m-%d")
+    reports = pending_reports(cfg, state, force, only)
+    if not reports:
+        return  # не время либо всё уже отправлено — запуск-проверка ничего не делает
+    for rep in reports:
+        date_from = rep["start"].strftime("%Y-%m-%d %H:%M:%S")
+        date_to = rep["end"].strftime("%Y-%m-%d %H:%M:%S")
+        text = build_report(cfg, date_from, date_to, rep["title"])
+        send_telegram(cfg["telegram_token"], cfg["telegram_chat_id"], text)
+        state.setdefault("sent", {})[rep["kind"]] = rep["key"]
         save_state(spath, state)
-        log(f"отчёт за {day:%d.%m.%Y} отправлен в группу {cfg['telegram_chat_id']}")
+        log(f"отчёт {rep['title']} отправлен в группу {cfg['telegram_chat_id']}")
 
 
 def notify_error(cfg: dict, error: Exception) -> None:
@@ -298,13 +328,14 @@ def notify_error(cfg: dict, error: Exception) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Отчёт по лидам Битрикс24 в Telegram")
+    parser = argparse.ArgumentParser(description="Отчёты по лидам Битрикс24 в Telegram")
     parser.add_argument("--config", default=str(SCRIPT_DIR / "config.json"),
                         help="путь к config.json (по умолчанию — рядом со скриптом)")
-    parser.add_argument("--period", choices=["yesterday", "today"],
-                        help="за какой день отчёт (переопределяет config.json)")
+    parser.add_argument("--period", choices=["day", "week", "month", "yesterday", "today"],
+                        help="day/yesterday, week, month; today — только для --dry-run")
     parser.add_argument("--force", action="store_true",
-                        help="отправить сейчас, даже если за этот день уже отправлено")
+                        help="отправить сейчас, даже если уже отправлено "
+                             "(с --period — только указанный отчёт)")
     parser.add_argument("--dry-run", action="store_true",
                         help="показать отчёт в консоли, ничего не отправляя")
     args = parser.parse_args()
@@ -317,13 +348,19 @@ def main():
                 raise RuntimeError(f"не заполнено поле {key} (config.json или переменные BTR_*)")
 
         if args.dry_run:
-            day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            if (args.period or cfg.get("period", "yesterday")) == "yesterday":
-                day -= timedelta(days=1)
-            print(build_report(cfg, day))
+            now = datetime.now()
+            today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            if args.period == "today":
+                start, end, title = today, today + timedelta(days=1), f"за {today:%d.%m.%Y} (сегодня)"
+            else:
+                period = completed_periods(now)[args.period or "day"]
+                start, end, title = period["start"], period["end"], period["title"]
+            print(build_report(cfg, start.strftime("%Y-%m-%d %H:%M:%S"),
+                               end.strftime("%Y-%m-%d %H:%M:%S"), title))
             return
 
-        run_scheduled(cfg, args.force, args.period or cfg.get("period", "yesterday"))
+        only = args.period if args.period in ("day", "week", "month") else None
+        run_scheduled(cfg, args.force, only)
     except Exception as err:
         log(f"ОШИБКА: {type(err).__name__}: {err}")
         if cfg is not None:
