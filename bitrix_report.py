@@ -351,7 +351,8 @@ HELP_TEXT = (
     "🤖 <b>Отчёты по лидам Битрикс24 — инструкция</b>\n"
     "\n"
     "🔘 <b>КОНСТРУКТОР ПО КНОПКАМ (ничего печатать не надо)</b>\n"
-    "/report → выбор периода → весь отчёт или рекламное поле → значение\n"
+    "/report → период (вчера, сегодня, эта/прошлая неделя, этот/прошлый месяц) → "
+    "весь отчёт или рекламное поле → значение\n"
     "Просто отправьте команду и нажимайте кнопки.\n"
     "\n"
     "📅 <b>ОТЧЁТЫ ЗА ПЕРИОД</b>\n"
@@ -423,11 +424,21 @@ def period_menu() -> dict:
     now = datetime.now()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     periods = completed_periods(now)
-    items = [("вчера", periods["day"]),
-             ("сегодня", {"start": today, "end": today + timedelta(days=1),
-                          "title": f"за {today:%d.%m.%Y} (сегодня)"}),
-             ("прошлая неделя (Пн–Вс)", periods["week"]),
-             ("прошлый месяц", periods["month"])]
+    this_monday = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    items = [
+        ("вчера", periods["day"]),
+        ("сегодня", {"start": today, "end": today + timedelta(days=1),
+                     "title": f"за {today:%d.%m.%Y} (сегодня)"}),
+        ("эта неделя (с понедельника)",
+         {"start": this_monday, "end": today + timedelta(days=1),
+          "title": f"за неделю {this_monday:%d.%m}–{today:%d.%m.%Y}"}),
+        ("этот месяц (с 1-го числа)",
+         {"start": month_start, "end": today + timedelta(days=1),
+          "title": f"за {MONTHS_RU[month_start.month - 1]} {month_start:%Y} (по сегодня)"}),
+        ("прошлая неделя (Пн–Вс)", periods["week"]),
+        ("прошлый месяц", periods["month"]),
+    ]
     options = {str(i): {"btn": label, "from": p["start"].strftime(DATE_FORMAT),
                         "to": p["end"].strftime(DATE_FORMAT), "title": p["title"]}
                for i, (label, p) in enumerate(items)}
