@@ -139,7 +139,8 @@ def fetch_leads(cfg: dict, date_from: str, date_to: str) -> list:
         flt["STATUS_ID"] = cfg["statuses"]
     if cfg.get("utm_sources"):
         flt["UTM_SOURCE"] = cfg["utm_sources"]
-    fields = ["ID", "STATUS_ID", "UTM_SOURCE", "UTM_MEDIUM", "UTM_CAMPAIGN"]
+    fields = ["ID", "STATUS_ID", "UTM_SOURCE", "UTM_MEDIUM", "UTM_CAMPAIGN",
+              "UTM_CONTENT", "UTM_TERM"]
     leads, start = [], 0
     while True:
         data = call_bitrix(webhook, "crm.lead.list",
@@ -193,9 +194,14 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str) -> str:
 
     for section_title, field in (("По источникам (utm_source)", "UTM_SOURCE"),
                                  ("По каналам (utm_medium)", "UTM_MEDIUM"),
-                                 ("По кампаниям (utm_campaign)", "UTM_CAMPAIGN")):
+                                 ("По кампаниям (utm_campaign)", "UTM_CAMPAIGN"),
+                                 ("По объявлениям (utm_content)", "UTM_CONTENT"),
+                                 ("По ключам (utm_term)", "UTM_TERM")):
+        counts = count_by(leads, field)
+        if set(counts) == {"(без метки)"}:
+            continue  # поле пустое у всех лидов — раздел не показываем
         lines.append(f"<b>{section_title}:</b>")
-        for value, count in count_by(leads, field).items():
+        for value, count in counts.items():
             lines.append(f"• {fmt(value)}: <b>{count}</b>")
         lines.append("")
 
