@@ -1493,6 +1493,8 @@ def daily_lead_counts(cfg: dict, date_to: str, days: int = 28) -> dict:
 
 WEEKDAYS_RU = ["понедельник", "вторник", "среда", "четверг",
                "пятница", "суббота", "воскресенье"]
+WEEKDAYS_RU_PP = ["понедельникам", "вторникам", "средам", "четвергам",
+                  "пятницам", "субботам", "воскресеньям"]
 
 
 def build_daily_forecast_message(cfg: dict, state: dict) -> str:
@@ -1539,7 +1541,9 @@ def build_daily_forecast_message(cfg: dict, state: dict) -> str:
     return (f"☀️ <b>Прогноз на сегодня, {WEEKDAYS_RU[today.weekday()]} "
             f"{today:%d.%m}</b>\n"
             f"{check}\n"
-            f"Темп: ~{avg14:.0f}/день (2 недели), по {WEEKDAYS_RU[today.weekday()]}м ~{dow_avg:.0f}\n\n"
+            f"• Средний темп за 2 недели: {avg14:.0f} лидов/день\n"
+            f"• По {WEEKDAYS_RU_PP[today.weekday()]} обычно ~{dow_avg:.0f} — "
+            f"учтено в прогнозе\n\n"
             f"Прогноз на сегодня: <b>~{pred} лидов</b>\n"
             f"{plan_line}")
 
