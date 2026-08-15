@@ -735,6 +735,15 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
         progress = plan_progress_line(cfg, plan)
         if progress:
             lines.append(progress)
+    else:
+        # актуальный месяц — всегда в шапке, даже когда план не задан
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        month_start = today.replace(day=1)
+        elapsed = max((today - month_start).days + 1, 1)
+        current = count_leads_between(cfg, month_start.strftime(DATE_FORMAT),
+                                      (today + timedelta(days=1)).strftime(DATE_FORMAT))
+        lines.append(f"📅 {MONTHS_RU[month_start.month - 1]}: {current} лидов · "
+                     f"темп {current / elapsed:.0f}/день")
     lines.append("")
 
     if not leads:
