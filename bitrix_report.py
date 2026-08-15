@@ -705,27 +705,7 @@ def build_plan(cfg: dict, week_start: datetime, week_end: datetime, plan: dict =
     return "\n".join(lines)
 
 
-UTM_ALIASES = {"site_source_inst": "instagram", "site_source_inst_prodasha": "instagram (продажа)"}
-
-
-def pretty_utm(value: str) -> str:
-    """Расшифровка имён агентства: {{site_source_inst}} -> instagram,
-    {{campaign.name_X}} -> «кампания: X», {{adset.id_X}} -> «креатив: X»."""
-    if not (value.startswith("{{") and value.endswith("}}")):
-        return value
-    inner = value[2:-2].strip()
-    if inner in UTM_ALIASES:
-        return UTM_ALIASES[inner]
-    for prefix, label in (("campaign.name_", "кампания: "),
-                          ("adset.id_", "креатив: "),
-                          ("campaign.id_", ""), ("site_source_", "источник: ")):
-        if inner.startswith(prefix):
-            return label + inner[len(prefix):]
-    return inner
-
-
 def fmt(value: str, limit: int = 60) -> str:
-    value = pretty_utm(value)
     if len(value) > limit:
         value = value[:limit] + "…"
     return html.escape(value)
