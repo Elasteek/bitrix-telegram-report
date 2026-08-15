@@ -622,7 +622,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
         days_in_month = ((month_start.replace(day=28) + timedelta(days=4))
                          .replace(day=1) - month_start).days
         month_lines.append(f"• {MONTHS_RU[month_start.month - 1]}, день {elapsed} из {days_in_month}: "
-                           f"{current} лидов, к этому дню нужно {daily_goal * elapsed} "
+                           f"{current} лидов, к этому дню должно было быть {daily_goal * elapsed} "
                            f"({current * 100 // (daily_goal * elapsed)}%) — по факту идёт "
                            f"{current / elapsed:.0f}/день при цели {daily_goal}")
 
