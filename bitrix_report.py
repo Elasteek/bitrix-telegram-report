@@ -1108,6 +1108,7 @@ HELP_ADMIN = (
     "в шапке отчётов во всех группах.\n"
     "\n"
     "<b>КОМАНДЫ</b> (работают в обеих группах)\n"
+    "/forecast — прогноз по лидам и план одной командой\n"
     "/report — конструктор по кнопкам: период (вчера, неделя, месяц, 90 дней) → "
     "формат (краткий / полный / один UTM-список) или сразу «📈 Прогноз и план»\n"
     "/day · /day 14.08 · /week · /month 07.2026 · /range 10.08 16.08\n"
@@ -1155,6 +1156,7 @@ HELP_WORK = (
     "отстаём ❌». Изменить можно только в чате руководителя.\n"
     "\n"
     "<b>КОМАНДЫ</b>\n"
+    "/forecast — прогноз по лидам и план одной командой\n"
     "/report — по кнопкам: период → формат или сразу «📈 Прогноз и план»\n"
     "/day 14.08 · /week · /month 07.2026 · /range 10.08 16.08\n"
     "/utmsource … /utmterm — меню значений метки (дата, week, month, 90)\n"
@@ -1673,6 +1675,18 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
                                       "Передайте его администратору бота.")
                     except Exception:
                         pass
+                continue
+            if text.split()[0].lower().split("@")[0] == "/forecast":
+                try:
+                    reply = forecast_and_plan_message(cfg, state, clean=clean_mode(cfg, chat))
+                    save_state(spath, state)
+                except Exception as err:
+                    reply = f"⚠️ {html.escape(str(err)[:300])}"
+                try:
+                    send_telegram(cfg["telegram_token"], chat, reply)
+                    log(f"команда «/forecast» выполнена (чат {chat})")
+                except Exception as err:
+                    log(f"не удалось ответить на «/forecast»: {err}")
                 continue
             if text.split()[0].lower().split("@")[0] == "/plan":
                 try:
