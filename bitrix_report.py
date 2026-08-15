@@ -97,6 +97,8 @@ def config_from_env() -> dict:
         "no_utm_chats": split("BTR_NO_UTM_CHATS"),
         # административный чат — здесь задаётся план (/plan)
         "admin_chats": split("BTR_ADMIN_CHATS"),
+        # путь к файлу состояния (для ручных запусков)
+        "state_file": (os.environ.get("BTR_STATE_FILE") or "").strip() or None,
         "send_hour": send_hour,
         "poll_seconds": poll_seconds,
         "reports": split("BTR_REPORTS") or ["day", "week", "month"],
