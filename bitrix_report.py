@@ -619,10 +619,12 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
         elapsed = max((today - month_start).days + 1, 1)
         current = count_leads_between(cfg, month_start.strftime(DATE_FORMAT),
                                       (today + timedelta(days=1)).strftime(DATE_FORMAT))
-        month_lines.append(f"• {MONTHS_RU[month_start.month - 1]}: {current} из "
-                           f"{daily_goal * elapsed} ({current * 100 // (daily_goal * elapsed)}%) "
-                           f"— фактический темп {current / elapsed:.0f}/день "
-                           f"при цели {daily_goal}")
+        days_in_month = ((month_start.replace(day=28) + timedelta(days=4))
+                         .replace(day=1) - month_start).days
+        month_lines.append(f"• {MONTHS_RU[month_start.month - 1]}, день {elapsed} из {days_in_month}: "
+                           f"{current} лидов, к этому дню нужно {daily_goal * elapsed} "
+                           f"({current * 100 // (daily_goal * elapsed)}%) — темп "
+                           f"{current / elapsed:.0f}/день при цели {daily_goal}")
 
     trend = " → ".join(str(c) for c in history[-6:])
     if clean:
