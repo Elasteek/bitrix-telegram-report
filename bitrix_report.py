@@ -580,11 +580,11 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
     if change <= -5:
         verdict = f"⚠️ Упали на {abs(change):.0f}% — проверьте бюджет и каналы, само не восстановится"
     elif change < 5:
-        verdict = "😐 Роста нет — старыми действиями план не закрыть"
+        verdict = "Роста нет — старыми действиями план не закрыть"
     elif change < 25:
-        verdict = f"🙂 Растём (+{change:.0f}%) — усиливайте то, что работает"
+        verdict = f"Растём (+{change:.0f}%) — усиливайте то, что работает"
     else:
-        verdict = f"🚀 Рост +{change:.0f}% — резко усиливайте то, что работает"
+        verdict = f"Рост +{change:.0f}% — резко усиливайте то, что работает"
 
     stored = (state.get("forecasts") or {}).get(key)
     if stored:
@@ -606,7 +606,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     daily_goal = int(plan.get("daily") or 0) \
         if plan.get("month") == today.strftime("%Y-%m") else 0
-    goal_line = f"🎯 <b>Цель: {daily_goal} лидов в день</b>\n\n" if daily_goal else ""
+    goal_line = f"<b>Цель: {daily_goal} лидов в день</b>\n\n" if daily_goal else ""
     yesterday = today - timedelta(days=1)
     y_count = count_leads_between(cfg, yesterday.strftime(DATE_FORMAT),
                                   today.strftime(DATE_FORMAT))
@@ -634,7 +634,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
         dyn_label = "Динамика по неделям (все созданные лиды)"
     try:
         wtd, projected, days_left_w = current_week_projection(cfg)
-        current_week = (f"🔮 Текущая неделя: уже {wtd}, к воскресенью будет "
+        current_week = (f"Текущая неделя: уже {wtd}, к воскресенью будет "
                         f"<b>~{projected} за неделю</b> (~{projected / 7:.0f}/день)\n")
     except Exception:
         current_week = ""
@@ -644,7 +644,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
         if short > 0:
             forecast_gap = f" — до цели {daily_goal}/день не хватает {short} за неделю"
     return (f"{goal_line}"
-            f"📉 <b>Реальность:</b>\n"
+            f"<b>Реальность:</b>\n"
             f"{y_line}\n"
             f"• Неделя {week_start:%d.%m}–{week_end - timedelta(days=1):%d.%m.%Y}: "
             f"<b>{actual}</b> лидов (~{actual / 7:.0f}/день)\n"
@@ -653,7 +653,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             + ("\n".join(month_lines) + "\n" if month_lines else "") +
             f"\n{verdict}\n"
             f"{current_week}"
-            f"🔮 Следующая неделя по текущему темпу: <b>~{next_pred} за неделю</b> "
+            f"Следующая неделя по текущему темпу: <b>~{next_pred} за неделю</b> "
             f"(~{next_pred / 7:.0f}/день){forecast_gap}")
 
 
@@ -669,7 +669,7 @@ def build_plan(cfg: dict, week_start: datetime, week_end: datetime, plan: dict =
     next_monday = week_start + timedelta(days=7)
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
-    lines = ["🧭 <b>Задачи и фокус:</b>"]
+    lines = ["<b>Задачи и фокус:</b>"]
     if plan and plan.get("month") == today.strftime("%Y-%m") and int(plan.get("daily") or 0):
         daily = int(plan["daily"])
         need_weekly = daily * 7
@@ -725,7 +725,7 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
     utm_sources = cfg.get("utm_sources") or []
     leads = fetch_leads(cfg, date_from, date_to, extra)
 
-    lines = [f"📊 <b>Отчёт по лидам {title}</b>"]
+    lines = [f"<b>Отчёт по лидам {title}</b>"]
     if utm_sources:
         lines.append(f"источники: {fmt(', '.join(utm_sources))}")
     if extra:
@@ -742,7 +742,7 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
         elapsed = max((today - month_start).days + 1, 1)
         current = count_leads_between(cfg, month_start.strftime(DATE_FORMAT),
                                       (today + timedelta(days=1)).strftime(DATE_FORMAT))
-        lines.append(f"📅 {MONTHS_RU[month_start.month - 1]}: {current} лидов · "
+        lines.append(f"{MONTHS_RU[month_start.month - 1]}: {current} лидов · "
                      f"темп {current / elapsed:.0f}/день")
     lines.append("")
 
@@ -777,12 +777,12 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
     countries = [(country, count) for country, count in count_countries(leads).items()
                  if not (clean and country == "не определена")]
     if not (len(countries) == 1 and countries[0][0] == "не определена"):
-        lines.append("<b>🌍 Страны (по номеру телефона):</b>")
+        lines.append("<b>Страны (по номеру телефона):</b>")
         for country, count in countries:
             lines.append(f"• {fmt(country)}: <b>{count}</b>")
         lines.append("")
 
-    lines.append(f"📋 <b>Итог по меткам: {len(leads)}</b>")
+    lines.append(f"<b>Итог по меткам: {len(leads)}</b>")
     lines.extend(build_summary(leads, clean))
 
     if clean:
@@ -793,12 +793,12 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
         free_products, paid_products = count_products(leads)
         if free_products:
             lines.append("")
-            lines.append("<b>🎁 Бесплатные уроки (от большего к меньшему):</b>")
+            lines.append("<b>Бесплатные уроки (от большего к меньшему):</b>")
             for name, count in list(free_products.items())[:15]:
                 lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
         if paid_products:
             lines.append("")
-            lines.append("<b>💳 Попытка оплатить (от большего к меньшему):</b>")
+            lines.append("<b>Попытка оплатить (от большего к меньшему):</b>")
             for name, count in list(paid_products.items())[:10]:
                 lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
     return "\n".join(lines)
@@ -879,7 +879,7 @@ def plan_progress_line(cfg: dict, plan: dict):
         pace = "в графике ✅"
     else:
         pace = f"отстаём ❌"
-    return (f"🎯 План {daily}/день · вчера {y_count} · темп {current / elapsed:.0f}/день · "
+    return (f"План {daily}/день · вчера {y_count} · темп {current / elapsed:.0f}/день · "
             f"{MONTHS_RU[month_start.month - 1]} {current * 100 // expected}% · {pace}")
 
 
@@ -892,7 +892,7 @@ def handle_plan_command(cfg: dict, state: dict, spath: Path, text: str) -> str:
         if arg in ("удалить", "off", "сброс"):
             if state.pop("plan", None) is not None:
                 save_state(spath, state)
-                return "🗑 План удалён."
+                return "План удалён."
             return "Плана и не было."
         if arg.isdigit():
             daily = int(arg)
@@ -900,7 +900,7 @@ def handle_plan_command(cfg: dict, state: dict, spath: Path, text: str) -> str:
         plan = state.get("plan")
         if not plan or plan.get("month") != datetime.now().strftime("%Y-%m") \
                 or not plan.get("daily"):
-            return ("🎯 Задание плана: <code>/plan 100</code> — сколько лидов "
+            return ("Задание плана: <code>/plan 100</code> — сколько лидов "
                     "нужно В ДЕНЬ.\nСейчас план не задан.")
         return (f"Текущий план:\n{plan_progress_line(cfg, plan)}\n\n"
                 "Изменить: /plan 150 · удалить: /plan удалить")
@@ -909,7 +909,7 @@ def handle_plan_command(cfg: dict, state: dict, spath: Path, text: str) -> str:
     state["plan"] = {"month": datetime.now().strftime("%Y-%m"), "daily": daily}
     save_state(spath, state)
     month_name = MONTHS_RU[datetime.now().month - 1]
-    return (f"🎯 План принят: <b>{daily} лидов/день</b> "
+    return (f"План принят: <b>{daily} лидов/день</b> "
             f"(≈ {daily * 31} за {month_name}).\n\n"
             f"{plan_progress_line(cfg, state['plan'])}")
 
@@ -1090,7 +1090,7 @@ def notify_error(cfg: dict, error: Exception) -> None:
 
 
 HELP_ADMIN = (
-    "🤖 <b>Бот отчётов по лидам — пульт руководителя</b>\n"
+    "<b>Бот отчётов по лидам — пульт руководителя</b>\n"
     "\n"
     "<b>ЧТО ПРИХОДИТ САМО</b>\n"
     "• Каждое утро в 9:00 — отчёт за вчера (страны, итог по меткам, какие уроки "
@@ -1110,7 +1110,7 @@ HELP_ADMIN = (
     "<b>КОМАНДЫ</b> (работают в обеих группах)\n"
     "/forecast — прогноз по лидам и план одной командой\n"
     "/report — конструктор по кнопкам: период (вчера, неделя, месяц, 90 дней) → "
-    "формат (краткий / полный / один UTM-список) или сразу «📈 Прогноз и план»\n"
+    "формат (краткий / полный / один UTM-список) или сразу «Прогноз и план»\n"
     "/day · /day 14.08 · /week · /month 07.2026 · /range 10.08 16.08\n"
     "/utmsource /utmmedium /utmcampaign /utmcontent /utmterm — меню значений "
     "метки (можно с датой, week, month, 90)\n"
@@ -1130,11 +1130,11 @@ HELP_ADMIN = (
     "\n"
     "<b>ПОЧЕМУ ЗДЕСЬ КОРОТКИЕ ОТЧЁТЫ</b>\n"
     "Этот чат — без UTM-списков, только суть. Полный отчёт: /report → "
-    "«📋 Полный». Рекламная детализация — в рабочей группе."
+    "«Полный». Рекламная детализация — в рабочей группе."
 )
 
 HELP_WORK = (
-    "🤖 <b>Бот отчётов — рабочий чат (рекламный режим)</b>\n"
+    "<b>Бот отчётов — рабочий чат (рекламный режим)</b>\n"
     "\n"
     "<b>ЧТО ПРИХОДИТ САМО</b>\n"
     "• Утро 9:00 — отчёт за вчера и сразу прогноз на сегодня\n"
@@ -1152,12 +1152,12 @@ HELP_WORK = (
     "\n"
     "<b>ПЛАН</b>\n"
     "Задаёт руководитель в своём чате (/plan 50 = 50 лидов в день). Здесь виден "
-    "прогресс в шапке отчётов: «🎯 План 50/день · вчера 10 · темп 13/день · "
+    "прогресс в шапке отчётов: «План 50/день · вчера 10 · темп 13/день · "
     "отстаём ❌». Изменить можно только в чате руководителя.\n"
     "\n"
     "<b>КОМАНДЫ</b>\n"
     "/forecast — прогноз по лидам и план одной командой\n"
-    "/report — по кнопкам: период → формат или сразу «📈 Прогноз и план»\n"
+    "/report — по кнопкам: период → формат или сразу «Прогноз и план»\n"
     "/day 14.08 · /week · /month 07.2026 · /range 10.08 16.08\n"
     "/utmsource … /utmterm — меню значений метки (дата, week, month, 90)\n"
     "\n"
@@ -1184,15 +1184,15 @@ def build_help(admin: bool = False, clean: bool = False) -> str:
 # ----------------------------- команды бота -----------------------------
 
 HELP_TEXT = (
-    "🤖 <b>Отчёты по лидам Битрикс24 — инструкция</b>\n"
+    "<b>Отчёты по лидам Битрикс24 — инструкция</b>\n"
     "\n"
-    "🔘 <b>КОНСТРУКТОР ПО КНОПКАМ (ничего печатать не надо)</b>\n"
+    "<b>КОНСТРУКТОР ПО КНОПКАМ (ничего печатать не надо)</b>\n"
     "/report → период (вчера, сегодня, эта/прошлая неделя, этот/прошлый месяц, "
     "90 дней) → формат: краткий без UTM-списков, полный, один конкретный список "
-    "или 📈 прогноз с реальным планом\n"
+    "или прогноз с реальным планом\n"
     "Просто отправьте команду и нажимайте кнопки.\n"
     "\n"
-    "📅 <b>ОТЧЁТЫ ЗА ПЕРИОД</b>\n"
+    "<b>ОТЧЁТЫ ЗА ПЕРИОД</b>\n"
     "<code>/day</code> — за вчера\n"
     "<code>/day 14.08</code> — за конкретный день (или 14.08.2026, 2026-08-14)\n"
     "<code>/week</code> — прошлая неделя (Пн–Вс)\n"
@@ -1201,7 +1201,7 @@ HELP_TEXT = (
     "<code>/month 07.2026</code> — конкретный месяц\n"
     "<code>/range 10.08 16.08</code> — свой период (до 92 дней)\n"
     "\n"
-    "🔎 <b>РЕКЛАМНЫЕ РАЗБИВКИ — меню с кнопками</b>\n"
+    "<b>РЕКЛАМНЫЕ РАЗБИВКИ — меню с кнопками</b>\n"
     "<code>/utmsource</code> — источники за вчера\n"
     "<code>/utmsource 14.08</code> — источники за 14 августа\n"
     "<code>/utmcampaign week</code> — кампании за прошлую неделю\n"
@@ -1210,7 +1210,7 @@ HELP_TEXT = (
     "Кнопка выглядит как «значение · число лидов». Нажали — пришёл отчёт только "
     "по этому значению. Меню остаётся — можно нажать несколько и сравнить.\n"
     "\n"
-    "⚡ <b>КОРОТКАЯ ФОРМА</b> — к любой команде периода допишите <code>utm поле</code>:\n"
+    "<b>КОРОТКАЯ ФОРМА</b> — к любой команде периода допишите <code>utm поле</code>:\n"
     "<code>/day 14.08 utm source</code>\n"
     "<code>/week utm medium</code>\n"
     "<code>/range 10.08 16.08 utm campaign</code>\n"
@@ -1220,7 +1220,7 @@ HELP_TEXT = (
     "фактическим значениям (пустые скрываются) и список уроков/курсов, "
     "которые брали лиды.\n"
     "\n"
-    "ℹ️ <b>ПОЛЕЗНОЕ</b>\n"
+    "<b>ПОЛЕЗНОЕ</b>\n"
     "• Даты — как удобно: 14.08, 14.08.2026, 2026-08-14, «вчера», «сегодня».\n"
     "• Команда из меню «/» улетает сразу, без аргументов — для дат печатайте "
     "текстом (примеры выше) или жмите /report.\n"
@@ -1229,7 +1229,7 @@ HELP_TEXT = (
     "за неделю — в понедельник, за месяц — 1-го числа.\n"
     "• Считаются лиды в статусах: Новый, Прогрев, Попытка оплатить курс, "
     "Диалог с куратором, Диагностика, Конвертирован.\n"
-    "🎯 <b>ПЛАН ПО ЛИДАМ</b> (задаётся в группе руководителя):\n"
+    "<b>ПЛАН ПО ЛИДАМ</b> (задаётся в группе руководителя):\n"
     "/plan 100 — сколько лидов нужно В ДЕНЬ · /plan — прогресс · "
     "/plan удалить — сброс. Прогресс виден в шапке каждого отчёта.\n"
     "• Если что-то сломалось — бот сам пришлёт ⚠️ с причиной."
@@ -1257,7 +1257,7 @@ def build_menu(cfg: dict, field: str, date_from: str, date_to: str, title: str,
     options = {str(i): {"btn": f"{value if len(value) <= 44 else value[:44] + '…'} · {count}",
                         "v": value}
                for i, (value, count) in enumerate(counts[:20])}
-    return {"stage": "value", "text": f"🔎 {title} — выберите {FIELD_LABELS.get(field, field)}:",
+    return {"stage": "value", "text": f"{title} — выберите {FIELD_LABELS.get(field, field)}:",
             "field": field, "from": date_from, "to": date_to, "title": title,
             "options": options}
 
@@ -1290,15 +1290,15 @@ def period_menu() -> dict:
                         "to": p["end"].strftime(DATE_FORMAT), "title": p["title"]}
                for i, (label, p) in enumerate(items)}
     # прогноз доступен сразу, первым тапом — без выбора периода и формата
-    options["f"] = {"btn": "📈 Прогноз и план", "v": "forecast"}
-    return {"stage": "period", "text": "📅 Выберите период:", "options": options}
+    options["f"] = {"btn": "Прогноз и план", "v": "forecast"}
+    return {"stage": "period", "text": "Выберите период:", "options": options}
 
 
 def field_menu(date_from: str, date_to: str, title: str) -> dict:
     """Второй шаг /report: формат отчёта — краткий, полный или один UTM-список."""
-    items = [("📊 Краткий (без UTM-списков)", "short"),
-             ("📋 Полный (все UTM-списки)", "all")] + \
-            [(f"🔎 Только {label.split(' (')[0]}", key)
+    items = [("Краткий (без UTM-списков)", "short"),
+             ("Полный (все UTM-списки)", "all")] + \
+            [(f"Только {label.split(' (')[0]}", key)
              for key, label in FIELD_LABELS.items()]
     options = {str(i): {"btn": btn, "v": value} for i, (btn, value) in enumerate(items)}
     return {"stage": "field", "text": f"Что показать {title}?",
@@ -1532,15 +1532,15 @@ def build_daily_forecast_message(cfg: dict, state: dict) -> str:
         plan.get("month") == today.strftime("%Y-%m") else 0
     if daily_goal:
         if pred >= daily_goal:
-            plan_line = f"🎯 Цель {daily_goal}/день — прогноз её закрывает ✅"
+            plan_line = f"Цель {daily_goal}/день — прогноз её закрывает ✅"
         else:
             mult = daily_goal / max(pred, 1)
-            plan_line = (f"🎯 До цели не хватает {daily_goal - pred} — поднять "
+            plan_line = (f"До цели не хватает {daily_goal - pred} — поднять "
                          f"темп в {mult:.1f} раза ❌")
     else:
-        plan_line = "🎯 Цель не задана: /plan 100 в группе руководителя"
+        plan_line = "Цель не задана: /plan 100 в группе руководителя"
 
-    return (f"☀️ <b>Прогноз на сегодня, {WEEKDAYS_RU[today.weekday()]} "
+    return (f"<b>Прогноз на сегодня, {WEEKDAYS_RU[today.weekday()]} "
             f"{today:%d.%m}</b>\n"
             f"{check}\n"
             f"• Средний темп за 2 недели: {avg14:.0f} лидов/день\n"
@@ -1670,7 +1670,7 @@ def handle_commands(cfg: dict, poll_seconds: int) -> None:
                 if text.startswith("/"):
                     try:
                         send_telegram(cfg["telegram_token"], chat,
-                                      "⛔️ Этот чат ещё не подключён к отчётам.\n"
+                                      "Этот чат ещё не подключён к отчётам.\n"
                                       f"chat_id этого чата: <code>{chat}</code>\n"
                                       "Передайте его администратору бота.")
                     except Exception:
