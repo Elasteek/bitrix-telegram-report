@@ -732,13 +732,30 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
         span = 1
     if span > 2:
         try:
-            created = call_bitrix(cfg["bitrix_webhook"], "crm.lead.list", {
+            created = int(call_bitrix(cfg["bitrix_webhook"], "crm.lead.list", {
                 "filter": {">=DATE_CREATE": date_from, "<DATE_CREATE": date_to},
-                "select": ["ID"], "start": 0}).get("total") or 0
-            if int(created) > len(leads):
+                "select": ["ID"], "start": 0}).get("total") or 0)
+            if created > len(leads):
+                # чем заняты несчитаемые лиды — реальная раскладка по статусам
+                rest, cursor = {}, 0
+                names = status_names(cfg["bitrix_webhook"])
+                while True:
+                    data = call_bitrix(cfg["bitrix_webhook"], "crm.lead.list", {
+                        "filter": {">=DATE_CREATE": date_from, "<DATE_CREATE": date_to,
+                                   "!STATUS_ID": cfg.get("statuses") or []},
+                        "select": ["STATUS_ID"], "start": cursor})
+                    page = data.get("result", [])
+                    for lead in page:
+                        key = names.get(lead.get("STATUS_ID"), lead.get("STATUS_ID") or "?")
+                        rest[key] = rest.get(key, 0) + 1
+                    cursor += len(page)
+                    if not page or cursor >= int(data.get("total") or 0) or cursor > 5000:
+                        break
+                top = ", ".join(f"{k} {v}" for k, v in
+                                sorted(rest.items(), key=lambda kv: -kv[1])[:3])
                 lines.append(f"Создано за период: <b>{created}</b> · в отслеживаемых "
-                             f"статусах: <b>{len(leads)}</b> (остальные — дубли уроков "
-                             f"и архив)")
+                             f"статусах: <b>{len(leads)}</b>"
+                             + (f" · не считаем: {top}" if top else ""))
         except Exception:
             pass
     if utm_sources:
