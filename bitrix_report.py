@@ -610,9 +610,24 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
     yesterday = today - timedelta(days=1)
     y_count = count_leads_between(cfg, yesterday.strftime(DATE_FORMAT),
                                   today.strftime(DATE_FORMAT))
+    # сколько из вчерашних лидов в отслеживаемых статусах (остальное — дубли уроков)
+    y_in_status = 0
+    try:
+        flt = {">=DATE_CREATE": yesterday.strftime(DATE_FORMAT),
+               "<DATE_CREATE": today.strftime(DATE_FORMAT)}
+        if cfg.get("statuses"):
+            flt["STATUS_ID"] = cfg["statuses"]
+        data = call_bitrix(cfg["bitrix_webhook"], "crm.lead.list",
+                           {"filter": flt, "select": ["ID"], "start": 0})
+        y_in_status = int(data.get("total") or 0)
+    except Exception:
+        pass
     y_line = f"• Вчера ({yesterday:%d.%m}): <b>{y_count}</b>"
     if daily_goal:
         y_line += f" из {daily_goal}"
+    if y_in_status and y_count > y_in_status:
+        y_line += (f", из них {y_in_status} в работе, {y_count - y_in_status} — дубли уроков "
+                   f"(один клиент взял разные уроки)")
     month_lines = []
     if daily_goal:
         month_start = today.replace(day=1)
@@ -869,6 +884,19 @@ def plan_progress_line(cfg: dict, plan: dict):
     yesterday = today - timedelta(days=1)
     y_count = count_leads_between(cfg, yesterday.strftime(DATE_FORMAT),
                                   today.strftime(DATE_FORMAT))
+    y_note = ""
+    try:
+        flt = {">=DATE_CREATE": yesterday.strftime(DATE_FORMAT),
+               "<DATE_CREATE": today.strftime(DATE_FORMAT)}
+        if cfg.get("statuses"):
+            flt["STATUS_ID"] = cfg["statuses"]
+        data = call_bitrix(cfg["bitrix_webhook"], "crm.lead.list",
+                           {"filter": flt, "select": ["ID"], "start": 0})
+        y_in_status = int(data.get("total") or 0)
+        if y_in_status and y_count > y_in_status:
+            y_note = f" ({y_count - y_in_status} дублей уроков)"
+    except Exception:
+        pass
     ratio = current / expected if expected else 1
     if ratio >= 1.05:
         pace = "опережаем 🚀"
@@ -876,7 +904,7 @@ def plan_progress_line(cfg: dict, plan: dict):
         pace = "в графике ✅"
     else:
         pace = f"отстаём ❌"
-    return (f"План {daily}/день · вчера {y_count} · по факту идёт {current / elapsed:.0f}/день · "
+    return (f"План {daily}/день · вчера {y_count}{y_note} · по факту идёт {current / elapsed:.0f}/день · "
             f"{MONTHS_RU[month_start.month - 1]} {current * 100 // expected}% · {pace}")
 
 
