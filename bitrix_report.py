@@ -143,14 +143,17 @@ def call_bitrix(webhook: str, method: str, params: dict) -> dict:
     raise RuntimeError(f"Битрикс24 недоступен ({method}): {last_error}")
 
 
-def fetch_leads(cfg: dict, date_from: str, date_to: str, extra: dict = None) -> list:
+def fetch_leads(cfg: dict, date_from: str, date_to: str, extra: dict = None,
+                all_statuses: bool = False) -> list:
     """Лиды за период: выбранные статусы × выбранные UTM_SOURCE (если заданы).
 
     extra — дополнительный фильтр вида {"UTM_SOURCE": "ig"} (кнопки меню).
+    all_statuses=True — без фильтра статусов: так ищем попытки оплатить — их
+    заводят и в «Дубль уроков», и в «Уснул», а это те же покупки.
     """
     webhook = cfg["bitrix_webhook"]
     flt = {">=DATE_CREATE": date_from, "<DATE_CREATE": date_to}
-    if cfg.get("statuses"):
+    if cfg.get("statuses") and not all_statuses:
         flt["STATUS_ID"] = cfg["statuses"]
     if cfg.get("utm_sources"):
         flt["UTM_SOURCE"] = cfg["utm_sources"]
@@ -405,12 +408,15 @@ def attribution_map(cfg: dict, date_to: str) -> dict:
     return mapping
 
 
-def clean_attribution_sections(cfg: dict, leads: list, date_to: str) -> list:
+def clean_attribution_sections(cfg: dict, leads: list, date_to: str,
+                               pay_leads: list = None) -> list:
     """Блоки для рабочей группы: бесплатные уроки и попытки оплатить —
     только по меткам. Если у лида метки нет, источник ищется по телефону
-    в истории за 90 дней; у оплат показываем первый контакт и цикл продажи."""
+    в истории за 90 дней; у оплат показываем первый контакт и цикл продажи.
+    pay_leads — лиды всех статусов: попытки оплатить живут и в «Дубле»."""
     mapping = attribution_map(cfg, date_to)
     free_groups, users = {}, {}
+    pay_leads = pay_leads if pay_leads is not None else leads
 
     for lead in leads:
         key = user_key(lead)
@@ -431,13 +437,27 @@ def clean_attribution_sections(cfg: dict, leads: list, date_to: str) -> list:
             group = free_groups.setdefault(source, {})
             for name in free_set:
                 group[name] = group.get(name, 0) + 1
-        user["paid"].update(paid_set)
+
+    # попытки оплатить — из всех статусов, дедуп по телефону
+    for lead in pay_leads:
+        key = user_key(lead)
+        own = (lead.get("UTM_SOURCE") or "").strip()
+        user = users.setdefault(key, {"source": own, "paid": set(), "pay_date": None})
+        if own and not user["source"]:
+            user["source"] = own
         try:
             created = datetime.fromisoformat(lead.get("DATE_CREATE") or "")
-            if paid_set and (user["pay_date"] is None or created > user["pay_date"]):
-                user["pay_date"] = created
         except ValueError:
-            pass
+            created = None
+        raw = lead.get("UF_CRM_PRODUCT") or []
+        items = raw if isinstance(raw, list) else [raw]
+        for item in items:
+            for part in str(item).split(";"):
+                name, is_free = normalize_product(part)
+                if name and not is_free:
+                    user["paid"].add(name)
+                    if created and (user["pay_date"] is None or created > user["pay_date"]):
+                        user["pay_date"] = created
 
     paid_groups, first_notes = {}, {}
     for key, user in users.items():
@@ -818,12 +838,16 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
     lines.append(f"<b>Итог по меткам: {len(leads)}</b>")
     lines.extend(build_summary(leads, clean))
 
+    # попытки оплатить ищем по ВСЕМ статусам: их заводят и в «Дубль уроков»,
+    # и в «Уснул» — а это те же покупки существующих учеников
+    pay_leads = fetch_leads(cfg, date_from, date_to, all_statuses=True)
     if clean:
         # рабочая группа: бесплатные уроки и оплаты — только по меткам,
         # без метки источник ищется по телефону за 90 дней
-        lines.extend(clean_attribution_sections(cfg, leads, date_to))
+        lines.extend(clean_attribution_sections(cfg, leads, date_to, pay_leads))
     else:
-        free_products, paid_products = count_products(leads)
+        free_products, _ = count_products(leads)
+        _, paid_products = count_products(pay_leads)
         if free_products:
             lines.append("")
             lines.append("<b>Бесплатные уроки (от большего к меньшему):</b>")
@@ -861,10 +885,14 @@ def marketing_notes(cfg: dict, leads: list, date_from: str, date_to: str) -> lis
         else:
             notes.append(f"• Основной источник «{fmt(top)}» — {share}% лида, "
                          f"остальное распределено — устойчивая картина")
-    # 2) конверсия в попытку оплаты: знаменатель — ВСЕ созданные лиды периода,
-    # «уснувшие» и «архивные» — тоже не оплатившие, из воронки их выбрасывать нельзя
+    # 2) конверсия в попытку оплаты: числитель — платившие по ВСЕМ статусам
+    # (в «Дубле уроков» прячутся покупки постоянников), знаменатель — все созданные
+    try:
+        pay_all = fetch_leads(cfg, date_from, date_to, all_statuses=True)
+    except Exception:
+        pay_all = leads
     paid_users = set()
-    for lead in leads:
+    for lead in pay_all:
         raw = lead.get("UF_CRM_PRODUCT") or []
         items = raw if isinstance(raw, list) else [raw]
         for item in items:
