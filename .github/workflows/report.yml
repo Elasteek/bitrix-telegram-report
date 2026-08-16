@@ -19,6 +19,9 @@ on:
       poll_seconds:
         description: "Сколько секунд слушать команды бота (0 — не слушать)"
         default: "0"
+      only_chat:
+        description: "Отправить только в этот chat_id (пусто — как обычно, во все)"
+        default: ""
 
 # Новый запуск мгновенно вытесняет предыдущий: всегда работает максимум один
 # слушатель, и всегда на самом свежем коде (без «окон» со старой версией)
@@ -49,7 +52,7 @@ jobs:
           BTR_BITRIX_WEBHOOK: ${{ secrets.BITRIX_WEBHOOK }}
           BTR_TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           BTR_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          BTR_REPORT_CHAT_ID: ${{ vars.REPORT_CHAT_ID }}  # кому слать автоотчёты; пусто = всем чатам
+          BTR_REPORT_CHAT_ID: ${{ inputs.only_chat || vars.REPORT_CHAT_ID }}  # кому слать автоотчёты; пусто = всем чатам
           BTR_CLEAN_CHATS: ${{ vars.CLEAN_CHATS }}  # чаты, где в отчётах нет «(без метки)»
           BTR_NO_UTM_CHATS: ${{ vars.NO_UTM_CHATS }}  # чаты: автоотчёты без UTM-списков
           BTR_ADMIN_CHATS: ${{ vars.ADMIN_CHATS }}  # чат руководителя: здесь задаётся /plan
