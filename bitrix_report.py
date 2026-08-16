@@ -896,13 +896,14 @@ def marketing_notes(cfg: dict, leads: list, date_from: str, date_to: str) -> lis
         prev_to = date_from
         prev_from = (datetime.strptime(date_from, DATE_FORMAT)
                      - timedelta(days=span_d)).strftime(DATE_FORMAT)
-        prev_src = {s for s in count_by(fetch_leads(cfg, prev_from, prev_to), "UTM_SOURCE")
-                    if s != "(без метки)"}
-        fresh = [s for s in src if s not in prev_src and s != "(без метки)"]
-        if fresh:
-            notes.append("• Новый источник за период: " +
-                         ", ".join(fmt(s) for s in fresh[:3]) +
-                         " — присмотритесь, возможно стоит усилить")
+        prev_leads = fetch_leads(cfg, prev_from, prev_to)
+        if prev_leads:  # вывод о «новых» имеет смысл только при непустой базе
+            prev_src = {s for s in count_by(prev_leads, "UTM_SOURCE") if s != "(без метки)"}
+            fresh = [s for s in src if s not in prev_src and s != "(без метки)"]
+            if fresh:
+                notes.append("• Новый источник за период: " +
+                             ", ".join(fmt(s) for s in fresh[:3]) +
+                             " — присмотритесь, возможно стоит усилить")
     except Exception:
         pass
     if not notes:
