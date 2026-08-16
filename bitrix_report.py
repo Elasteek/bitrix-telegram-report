@@ -945,6 +945,22 @@ def marketing_notes(cfg: dict, leads: list, date_from: str, date_to: str) -> lis
                              " — присмотритесь, возможно стоит усилить")
     except Exception:
         pass
+    # 5) реактивация уснувших
+    try:
+        names = status_names(cfg["bitrix_webhook"])
+        sleep_key = next((k for k, v in names.items() if "уснул" in v.lower()), None)
+        if sleep_key:
+            sleepers = [l for l in pay_all if l.get("STATUS_ID") == sleep_key]
+            if len(sleepers) >= 5 and len(sleepers) * 100 // base >= 10:
+                notes.append(
+                    f"• Реактивация: {len(sleepers)} уснувших ({len(sleepers) * 100 // base}% "
+                    f"лида) лежат без движения — это дешевле, чем новый трафик. Идеи: "
+                    f"новый бесплатный урок как повод выйти на связь; тем, кто пообщался "
+                    f"и пропал, — конкретный вопрос по их цели/треку вместо «как дела»; "
+                    f"промокод на первый курс с дедлайном 3 дня")
+    except Exception:
+        pass
+
     if not notes:
         return []
     return ["", "<b>Выводы (маркетинг):</b>"] + notes
