@@ -861,7 +861,8 @@ def marketing_notes(cfg: dict, leads: list, date_from: str, date_to: str) -> lis
         else:
             notes.append(f"• Основной источник «{fmt(top)}» — {share}% лида, "
                          f"остальное распределено — устойчивая картина")
-    # 2) конверсия в попытку оплаты vs рыночный ориентир
+    # 2) конверсия в попытку оплаты: знаменатель — ВСЕ созданные лиды периода,
+    # «уснувшие» и «архивные» — тоже не оплатившие, из воронки их выбрасывать нельзя
     paid_users = set()
     for lead in leads:
         raw = lead.get("UF_CRM_PRODUCT") or []
@@ -871,17 +872,27 @@ def marketing_notes(cfg: dict, leads: list, date_from: str, date_to: str) -> lis
                 name, is_free = normalize_product(part)
                 if name and not is_free:
                     paid_users.add(user_key(lead))
-    if leads:
-        conv = len(paid_users) * 100 / len(leads)
+    try:
+        created_total = int(call_bitrix(cfg["bitrix_webhook"], "crm.lead.list", {
+            "filter": {">=DATE_CREATE": date_from, "<DATE_CREATE": date_to},
+            "select": ["ID"], "start": 0}).get("total") or 0)
+    except Exception:
+        created_total = len(leads)
+    base = created_total or len(leads)
+    if base:
+        conv = len(paid_users) * 100 / base
         if conv >= 5:
-            notes.append(f"• Конверсия в оплату {conv:.0f}% — выше рыночного ориентира "
-                         f"(до 6,5%): масштабируйте трафик смело")
+            notes.append(f"• Конверсия в попытку оплаты: {len(paid_users)} из {base} "
+                         f"созданных ({conv:.0f}%) — выше ориентира 6,5%, "
+                         f"масштабируйте трафик смело")
         elif conv >= 3:
-            notes.append(f"• Конверсия в оплату {conv:.0f}% при ориентире до 6,5% — "
-                         f"норма, есть запас ×{6.5 / max(conv, 0.1):.1f}")
+            notes.append(f"• Конверсия в попытку оплаты: {len(paid_users)} из {base} "
+                         f"созданных ({conv:.0f}%) при ориентире до 6,5% — норма")
         else:
-            notes.append(f"• Конверсия в оплату {conv:.0f}% — ниже ориентира 6,5%: "
-                         f"перед масштабированием усилите дожим бесплатных уроков")
+            notes.append(f"• Конверсия в попытку оплаты: {len(paid_users)} из {base} "
+                         f"созданных ({conv:.0f}%) — ниже ориентира 6,5%: льёте "
+                         f"аудиторию хорошо, но дожим слабее рынка — усилить прогрев "
+                         f"и реанимацию «уснувших»")
     # 3) гео
     countries = count_countries(leads)
     if countries:
