@@ -730,7 +730,8 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
                 - datetime.strptime(date_from, DATE_FORMAT)).days
     except ValueError:
         span = 1
-    if span > 2:
+    if span > 2 and not clean:
+        # расшифровка несчитаемых лидов — только в чат руководителя
         try:
             created = int(call_bitrix(cfg["bitrix_webhook"], "crm.lead.list", {
                 "filter": {">=DATE_CREATE": date_from, "<DATE_CREATE": date_to},
@@ -833,7 +834,80 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
             lines.append("<b>Попытка оплатить (от большего к меньшему):</b>")
             for name, count in list(paid_products.items())[:10]:
                 lines.append(f"• {fmt(name, 60)} — {plural_times(count)}")
+
+    if span > 2 and not clean:
+        # маркетинговые выводы — только в чат руководителя
+        try:
+            lines.extend(marketing_notes(cfg, leads, date_from, date_to))
+        except Exception as err:
+            log(f"выводы не построены: {err}")
     return "\n".join(lines)
+
+
+def marketing_notes(cfg: dict, leads: list, date_from: str, date_to: str) -> list:
+    """Короткие маркетинговые выводы по длинному периоду (для чата руководителя)."""
+    notes = []
+    # 1) структура источников
+    src = count_by(leads, "UTM_SOURCE")
+    if src:
+        top, top_n = next(iter(src.items()))
+        share = top_n * 100 // len(leads)
+        if top == "(без метки)":
+            notes.append(f"• {share}% лида — органика без меток: сарафан и прямые "
+                         f"переходы, реклама фиксирует остальных")
+        elif share >= 60:
+            notes.append(f"• Ставка на один канал: «{fmt(top)}» даёт {share}% лида — "
+                         f"его отключение обрушит поток, тестируйте резервный источник")
+        else:
+            notes.append(f"• Основной источник «{fmt(top)}» — {share}% лида, "
+                         f"остальное распределено — устойчивая картина")
+    # 2) конверсия в попытку оплаты vs рыночный ориентир
+    paid_users = set()
+    for lead in leads:
+        raw = lead.get("UF_CRM_PRODUCT") or []
+        items = raw if isinstance(raw, list) else [raw]
+        for item in items:
+            for part in str(item).split(";"):
+                name, is_free = normalize_product(part)
+                if name and not is_free:
+                    paid_users.add(user_key(lead))
+    if leads:
+        conv = len(paid_users) * 100 / len(leads)
+        if conv >= 5:
+            notes.append(f"• Конверсия в оплату {conv:.0f}% — выше рыночного ориентира "
+                         f"(до 6,5%): масштабируйте трафик смело")
+        elif conv >= 3:
+            notes.append(f"• Конверсия в оплату {conv:.0f}% при ориентире до 6,5% — "
+                         f"норма, есть запас ×{6.5 / max(conv, 0.1):.1f}")
+        else:
+            notes.append(f"• Конверсия в оплату {conv:.0f}% — ниже ориентира 6,5%: "
+                         f"перед масштабированием усилите дожим бесплатных уроков")
+    # 3) гео
+    countries = count_countries(leads)
+    if countries:
+        ctop, ctop_n = next(iter(countries.items()))
+        notes.append(f"• Гео: {ctop} — {ctop_n * 100 // len(leads)}% лида"
+                     + (" — основной рынок под локальные офферы и язык"
+                        if ctop_n * 100 // len(leads) >= 50 else ""))
+    # 4) новые источники против предыдущего такого же периода
+    try:
+        span_d = (datetime.strptime(date_to, DATE_FORMAT)
+                  - datetime.strptime(date_from, DATE_FORMAT)).days
+        prev_to = date_from
+        prev_from = (datetime.strptime(date_from, DATE_FORMAT)
+                     - timedelta(days=span_d)).strftime(DATE_FORMAT)
+        prev_src = {s for s in count_by(fetch_leads(cfg, prev_from, prev_to), "UTM_SOURCE")
+                    if s != "(без метки)"}
+        fresh = [s for s in src if s not in prev_src and s != "(без метки)"]
+        if fresh:
+            notes.append("• Новый источник за период: " +
+                         ", ".join(fmt(s) for s in fresh[:3]) +
+                         " — присмотритесь, возможно стоит усилить")
+    except Exception:
+        pass
+    if not notes:
+        return []
+    return ["", "<b>Выводы (маркетинг):</b>"] + notes
 
 
 def chat_ids(cfg: dict) -> list:
