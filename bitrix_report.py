@@ -723,6 +723,24 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
     leads = fetch_leads(cfg, date_from, date_to, extra)
 
     lines = [f"<b>Отчёт по лидам {title}</b>"]
+    # для длинных периодов показываем и весь приток: старые лиди уезжают
+    # в «Дубль/Архив» и в срезе по статусам прошлое «исчезает»
+    try:
+        span = (datetime.strptime(date_to, DATE_FORMAT)
+                - datetime.strptime(date_from, DATE_FORMAT)).days
+    except ValueError:
+        span = 1
+    if span > 2:
+        try:
+            created = call_bitrix(cfg["bitrix_webhook"], "crm.lead.list", {
+                "filter": {">=DATE_CREATE": date_from, "<DATE_CREATE": date_to},
+                "select": ["ID"], "start": 0}).get("total") or 0
+            if int(created) > len(leads):
+                lines.append(f"Создано за период: <b>{created}</b> · в отслеживаемых "
+                             f"статусах: <b>{len(leads)}</b> (остальные — дубли уроков "
+                             f"и архив)")
+        except Exception:
+            pass
     if utm_sources:
         lines.append(f"источники: {fmt(', '.join(utm_sources))}")
     if extra:
