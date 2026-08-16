@@ -945,19 +945,42 @@ def marketing_notes(cfg: dict, leads: list, date_from: str, date_to: str) -> lis
                              " — присмотритесь, возможно стоит усилить")
     except Exception:
         pass
-    # 5) реактивация уснувших
+    # 5) реакивация уснувших; если в CRM статус разделён на сегменты
+    # («не вышел на связь» / «пообщались и пропал») — идея под каждый сегмент
     try:
         names = status_names(cfg["bitrix_webhook"])
-        sleep_key = next((k for k, v in names.items() if "уснул" in v.lower()), None)
-        if sleep_key:
-            sleepers = [l for l in pay_all if l.get("STATUS_ID") == sleep_key]
-            if len(sleepers) >= 5 and len(sleepers) * 100 // base >= 10:
-                notes.append(
-                    f"• Реактивация: {len(sleepers)} уснувших ({len(sleepers) * 100 // base}% "
-                    f"лида) лежат без движения — это дешевле, чем новый трафик. Идеи: "
-                    f"новый бесплатный урок как повод выйти на связь; тем, кто пообщался "
-                    f"и пропал, — конкретный вопрос по их цели/треку вместо «как дела»; "
-                    f"промокод на первый курс с дедлайном 3 дня")
+        sleep_ids = {k for k, v in names.items() if "уснул" in v.lower()}
+        if sleep_ids:
+            by_seg = {}
+            for l in pay_all:
+                sid = l.get("STATUS_ID")
+                if sid in sleep_ids:
+                    label = names[sid]
+                    by_seg[label] = by_seg.get(label, 0) + 1
+            total_sleep = sum(by_seg.values())
+            if total_sleep >= 5 and total_sleep * 100 // base >= 10:
+                lines_out = [f"• Реактивация: {total_sleep} уснувших "
+                             f"({total_sleep * 100 // base}% лида) — дешевле, чем новый трафик:"]
+                got_segment = False
+                for label, n in sorted(by_seg.items(), key=lambda kv: -kv[1]):
+                    low = label.lower()
+                    if "не вышел" in low or "без связи" in low:
+                        idea = ("не доходят до диалога — цепочка из 3 касаний за 48 ч: "
+                                "голосовое от куратора → новый бесплатный урок → промокод "
+                                "с дедлайном")
+                        got_segment = True
+                    elif "общал" in low or "пропал" in low:
+                        idea = ("был контакт и пропал — вернуться конкретным вопросом по "
+                                "их цели/треку, без «как дела»; предложить разбор")
+                        got_segment = True
+                    else:
+                        idea = "старый статус без разбора — разделите его на сегменты, идеи будут точнее"
+                    lines_out.append(f"  ↳ {label}: {n} — {idea}")
+                if not got_segment and len(by_seg) == 1:
+                    lines_out.append("  ↳ идеи: новый бесплатный урок как повод выйти на "
+                                     "связь; общавшимся — вопрос по их цели; промокод "
+                                     "с дедлайном 3 дня")
+                notes.extend(lines_out)
     except Exception:
         pass
 
