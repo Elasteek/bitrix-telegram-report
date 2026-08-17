@@ -842,8 +842,12 @@ def build_report(cfg: dict, date_from: str, date_to: str, title: str,
     # и в «Уснул» — а это те же покупки существующих учеников
     pay_leads = fetch_leads(cfg, date_from, date_to, all_statuses=True)
     if clean:
-        # рабочая группа: бесплатные уроки и оплаты — только по меткам,
-        # без метки источник ищется по телефону за 90 дней
+        # рабочая группа: показываем только рекламных лидов — метка своя или
+        # найдена по телефону в истории за 90 дней; органика скрыта полностью
+        mapping = attribution_map(cfg, date_to)
+        leads = [l for l in leads
+                 if (l.get("UTM_SOURCE") or "").strip()
+                 or user_key(l) in mapping]
         lines.extend(clean_attribution_sections(cfg, leads, date_to, pay_leads))
     else:
         free_products, _ = count_products(leads)
