@@ -599,18 +599,19 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
         change = (actual - prev) / prev * 100
     else:
         change = 100.0 if actual else 0.0
+    prev_start = week_start - timedelta(days=7)
     if change <= -5:
-        verdict = (f"Упали на {abs(change):.0f}% — было {prev}, стало {actual}. "
-                   f"Проверьте бюджет и каналы")
+        verdict = (f"Падение: на этой неделе {actual}, на прошлой было {prev} "
+                   f"(−{prev - actual} лидов, {change:.0f}%). Проверьте бюджет и каналы")
     elif change < 5:
-        verdict = (f"Стоим на месте: было {prev}, стало {actual} "
-                   f"({change:+.0f}%) — план не закрыть")
+        verdict = (f"Без роста: {actual} против {prev} на прошлой неделе — "
+                   f"разница всего {abs(actual - prev)} лида. План так не закрыть")
     elif change < 25:
-        verdict = (f"Растём: {prev} → {actual} (+{change:.0f}%) — "
-                   f"усиливайте то, что работает")
+        verdict = (f"Рост: +{actual - prev} лидов к прошлой неделе "
+                   f"({prev} → {actual}, +{change:.0f}%). Усиливайте то, что работает")
     else:
-        verdict = (f"Рост: {prev} → {actual} (+{change:.0f}%) — "
-                   f"резко усиливайте то, что работает")
+        verdict = (f"Сильный рост: +{actual - prev} лидов за неделю "
+                   f"({prev} → {actual}, +{change:.0f}%). Резко усиливайте")
 
     stored = (state.get("forecasts") or {}).get(key)
     if stored:
@@ -676,7 +677,8 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             f"{y_line}\n"
             f"• Неделя {week_start:%d.%m}–{week_end - timedelta(days=1):%d.%m.%Y}: "
             f"<b>{actual}</b> лидов (~{actual / 7:.0f}/день)"
-            + (f" (неделю назад: {prev})" if prev else "") + "\n"
+            + (f"\n• Прошлая неделя {prev_start:%d.%m}–{prev_start + timedelta(days=6):%d.%m}: "
+               f"<b>{prev}</b> лидов (~{prev / 7:.0f}/день)" if prev else "") + "\n"
             f"• {dyn_label}: {fmt(trend)}\n"
             f"• Мой прогноз на неделю: {check}\n"
             + ("\n".join(month_lines) + "\n" if month_lines else "") +
