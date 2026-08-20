@@ -659,7 +659,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
         trend = " → ".join(str(c) for _, c in sorted(attr_counts.items())[-6:])
         dyn_label = "Динамика по неделям (только с метками, безымянных ищем по телефону)"
     else:
-        dyn_label = "Динамика по неделям (все созданные лиды)"
+        dyn_label = "Динамика по неделям (в отслеживаемых статусах)"
     try:
         wtd, projected, days_left_w = current_week_projection(cfg)
         current_week = (f"Текущая неделя: уже {wtd}, к воскресенью будет "
@@ -676,7 +676,7 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             f"{y_line}\n"
             f"• Неделя {week_start:%d.%m}–{week_end - timedelta(days=1):%d.%m.%Y}: "
             f"<b>{actual}</b> лидов (~{actual / 7:.0f}/день)"
-            + (f" (недедю назад: {prev})" if prev else "") + "\n"
+            + (f" (неделю назад: {prev})" if prev else "") + "\n"
             f"• {dyn_label}: {fmt(trend)}\n"
             f"• Мой прогноз на неделю: {check}\n"
             + ("\n".join(month_lines) + "\n" if month_lines else "") +
