@@ -599,19 +599,36 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
         change = (actual - prev) / prev * 100
     else:
         change = 100.0 if actual else 0.0
+    # вердикт: текущая неделя vs прошлая на тот же день недели
+    try:
+        today_now = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        days_elapsed = today_now.weekday() + 1
+        this_monday = today_now - timedelta(days=today_now.weekday())
+        last_monday = this_monday - timedelta(days=7)
+        wtd_now = count_leads_between(cfg, this_monday.strftime(DATE_FORMAT),
+                                       (today_now + timedelta(days=1)).strftime(DATE_FORMAT))
+        wtd_last = count_leads_between(cfg, last_monday.strftime(DATE_FORMAT),
+                                        (last_monday + timedelta(days=days_elapsed)).strftime(DATE_FORMAT))
+        if wtd_last > 0:
+            now_change = (wtd_now - wtd_last) / wtd_last * 100
+            diff = wtd_now - wtd_last
+            if now_change <= -10:
+                verdict = (f"Падение: с понедельника набрали {wtd_now}, на тот же день "
+                           f"прошлой недели было {wtd_last} ({diff:+d} лида, {now_change:.0f}%). "
+                           f"Проверьте бюджет и каналы")
+            elif now_change < 10:
+                verdict = (f"Прошлая неделя на этот день: {wtd_last}, сейчас: {wtd_now} "
+                           f"({diff:+d}) — практически без изменений")
+            else:
+                verdict = (f"Рост: с понедельника {wtd_now} против {wtd_last} на тот же день "
+                           f"прошлой недели (+{diff} лида, +{now_change:.0f}%). "
+                           f"Усиливайте то, что работает")
+        else:
+            verdict = f"С понедельника: {wtd_now} лидов (для сравнения нет данных прошлой недели)"
+    except Exception:
+        pass  # оставляем прежний verdict как fallback
+
     prev_start = week_start - timedelta(days=7)
-    if change <= -5:
-        verdict = (f"Падение: на этой неделе {actual}, на прошлой было {prev} "
-                   f"(−{prev - actual} лидов, {change:.0f}%). Проверьте бюджет и каналы")
-    elif change < 5:
-        verdict = (f"Без роста: {actual} против {prev} на прошлой неделе — "
-                   f"разница всего {abs(actual - prev)} лида. План так не закрыть")
-    elif change < 25:
-        verdict = (f"Рост: +{actual - prev} лидов к прошлой неделе "
-                   f"({prev} → {actual}, +{change:.0f}%). Усиливайте то, что работает")
-    else:
-        verdict = (f"Сильный рост: +{actual - prev} лидов за неделю "
-                   f"({prev} → {actual}, +{change:.0f}%). Резко усиливайте")
 
     stored = (state.get("forecasts") or {}).get(key)
     if stored:
