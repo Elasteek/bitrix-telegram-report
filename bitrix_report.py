@@ -1573,6 +1573,9 @@ def process_command(cfg: dict, text: str, clean: bool = False, no_utm: bool = Fa
     if cmd in ("/start", "/help"):
         return build_help(admin, clean)
 
+    if cmd == "/chatid":
+        return f"chat_id этой группы: <code>{cfg.get('_chat_id', 'неизвестен')}</code>"
+
     if cmd == "/report":
         return period_menu()
 
@@ -1659,12 +1662,14 @@ def process_command(cfg: dict, text: str, clean: bool = False, no_utm: bool = Fa
 
 
 def daily_lead_counts(cfg: dict, date_to: str, days: int = 28) -> dict:
-    """Счёт СОЗДАННЫХ лидов по дням за N дней (без фильтра статусов — см.
-    weekly_lead_counts)."""
+    """Счёт лидов по дням за N дней в отслеживаемых статусах — единый срез
+    с отчётами: цифры прогноза совпадают с тем, что видно в CRM."""
     end = datetime.strptime(date_to, DATE_FORMAT)
     start = (end - timedelta(days=days)).strftime(DATE_FORMAT)
     webhook = cfg["bitrix_webhook"]
     flt = {">=DATE_CREATE": start, "<DATE_CREATE": date_to}
+    if cfg.get("statuses"):
+        flt["STATUS_ID"] = cfg["statuses"]
     counts, cursor, fetched = {}, 0, 0
     while True:
         data = call_bitrix(webhook, "crm.lead.list",
