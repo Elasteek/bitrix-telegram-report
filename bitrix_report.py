@@ -507,13 +507,15 @@ def clean_attribution_sections(cfg: dict, leads: list, date_to: str,
 
 def weekly_lead_counts(cfg: dict, date_to: str, weeks: int = 8,
                        attributed: bool = False) -> dict:
-    """Счёт СОЗДАННЫХ лидов по календарным неделям (Пн–Вс) за N недель.
-    attributed=True — считать только лиды с меткой (своей или найденной по
-    телефону в истории за 90 дней) — для рекламного чата."""
+    """Счёт лидов по календарным неделям (Пн–Вс) за N недель в отслеживаемых
+    статусах — единый срез с отчётами. attributed=True — только лиды с меткой
+    (своей или найденной по телефону за 90 дней) — для рекламного чата."""
     end = datetime.strptime(date_to, DATE_FORMAT)
     start = (end - timedelta(days=7 * weeks)).strftime(DATE_FORMAT)
     webhook = cfg["bitrix_webhook"]
     flt = {">=DATE_CREATE": start, "<DATE_CREATE": date_to}
+    if cfg.get("statuses"):
+        flt["STATUS_ID"] = cfg["statuses"]
     select = ["ID", "DATE_CREATE"]
     mapping = attribution_map(cfg, date_to) if attributed else None
     if mapping is not None:
@@ -598,13 +600,17 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
     else:
         change = 100.0 if actual else 0.0
     if change <= -5:
-        verdict = f"⚠️ Упали на {abs(change):.0f}% — проверьте бюджет и каналы, само не восстановится"
+        verdict = (f"Упали на {abs(change):.0f}% — было {prev}, стало {actual}. "
+                   f"Проверьте бюджет и каналы")
     elif change < 5:
-        verdict = "Роста нет — старыми действиями план не закрыть"
+        verdict = (f"Стоим на месте: было {prev}, стало {actual} "
+                   f"({change:+.0f}%) — план не закрыть")
     elif change < 25:
-        verdict = f"Растём (+{change:.0f}%) — усиливайте то, что работает"
+        verdict = (f"Растём: {prev} → {actual} (+{change:.0f}%) — "
+                   f"усиливайте то, что работает")
     else:
-        verdict = f"Рост +{change:.0f}% — резко усиливайте то, что работает"
+        verdict = (f"Рост: {prev} → {actual} (+{change:.0f}%) — "
+                   f"резко усиливайте то, что работает")
 
     stored = (state.get("forecasts") or {}).get(key)
     if stored:
@@ -669,7 +675,8 @@ def build_forecast_message(cfg: dict, state: dict, week_start: datetime,
             f"<b>Реальность:</b>\n"
             f"{y_line}\n"
             f"• Неделя {week_start:%d.%m}–{week_end - timedelta(days=1):%d.%m.%Y}: "
-            f"<b>{actual}</b> лидов (~{actual / 7:.0f}/день)\n"
+            f"<b>{actual}</b> лидов (~{actual / 7:.0f}/день)"
+            + (f" (недедю назад: {prev})" if prev else "") + "\n"
             f"• {dyn_label}: {fmt(trend)}\n"
             f"• Мой прогноз на неделю: {check}\n"
             + ("\n".join(month_lines) + "\n" if month_lines else "") +
